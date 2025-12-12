@@ -323,8 +323,12 @@ export async function fetchMarketData(symbol: string, options: { force?: boolean
     return cacheState.entries.get(symbol)?.data ?? null;
 }
 
-export async function fetchAllMarketData(symbols: string[]): Promise<MarketData[]> {
+export async function fetchAllMarketData(
+    symbols: string[],
+    options: { force?: boolean } = {},
+): Promise<MarketData[]> {
     const uniqueSymbols = symbols.filter((symbol) => MARKET_UNIVERSE[symbol]);
+    const force = Boolean(options.force);
 
     if (!HAS_FINNHUB) {
         return uniqueSymbols.map((symbol) => {
@@ -339,13 +343,15 @@ export async function fetchAllMarketData(symbols: string[]): Promise<MarketData[
     }
 
     const now = Date.now();
-    const staleSymbols = uniqueSymbols.filter((symbol) => {
-        const cached = cacheState.entries.get(symbol);
-        return !cached || now - cached.timestamp >= CACHE_DURATION;
-    });
+    const staleSymbols = force
+        ? uniqueSymbols
+        : uniqueSymbols.filter((symbol) => {
+            const cached = cacheState.entries.get(symbol);
+            return !cached || now - cached.timestamp >= CACHE_DURATION;
+        });
 
     if (staleSymbols.length > 0) {
-        await ensureRefreshed(staleSymbols);
+        await ensureRefreshed(staleSymbols, force);
     }
 
     const results = uniqueSymbols

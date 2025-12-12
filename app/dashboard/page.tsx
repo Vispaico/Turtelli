@@ -17,7 +17,7 @@ type SignalsResponse = {
     skipped: string[];
 };
 
-const fetcher = (url: string): Promise<SignalsResponse> => fetch(url).then(async (res) => {
+const fetcher = (url: string): Promise<SignalsResponse> => fetch(url, { cache: 'no-store' }).then(async (res) => {
     if (!res.ok) {
         const msg = await res.text();
         throw new Error(msg || 'Failed to fetch');
@@ -65,8 +65,11 @@ export default function Dashboard() {
 
     const currentPortfolio = activeTab === 'main' ? mainPortfolio : smallPortfolio;
 
-    const handleRefresh = useCallback(() => {
-        mutate(undefined, { revalidate: true });
+    const handleRefresh = useCallback(async () => {
+        await mutate(fetcher(`/api/signals?force=1&t=${Date.now()}`), {
+            revalidate: false,
+            rollbackOnError: true,
+        });
     }, [mutate]);
 
     return (
@@ -143,7 +146,7 @@ export default function Dashboard() {
                 {/* Right Column: Signals */}
                 <div className="lg:col-span-1">
                     <SignalTable signals={signals} />
-                    {isLoading && (
+                    {(isLoading || isValidating) && (
                         <p className="text-center text-sm opacity-60 mt-4">Refreshing signals...</p>
                     )}
                     {!!(data?.skipped?.length) && (
