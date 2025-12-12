@@ -24,16 +24,13 @@ const parseEnvNumber = (value: string | undefined, fallback: number): number => 
 
 const FINNHUB_MAX_REQUESTS_PER_MINUTE = parseEnvNumber(process.env.FINNHUB_MAX_REQUESTS_PER_MINUTE, 45);
 const FINNHUB_MAX_CONCURRENT_REQUESTS = parseEnvNumber(process.env.FINNHUB_MAX_CONCURRENT_REQUESTS, 1);
-const FINNHUB_MIN_DELAY_MS = parseEnvNumber(
-    process.env.FINNHUB_MIN_DELAY_MS,
-    Math.ceil(MINUTE_MS / FINNHUB_MAX_REQUESTS_PER_MINUTE),
-);
+const FINNHUB_MIN_DELAY_MS = parseEnvNumber(process.env.FINNHUB_MIN_DELAY_MS, 0);
 
 const TWELVE_DATA_MAX_REQUESTS_PER_MINUTE = parseEnvNumber(process.env.TWELVE_DATA_MAX_REQUESTS_PER_MINUTE, 8);
 const TWELVE_DATA_MAX_CONCURRENT_REQUESTS = parseEnvNumber(process.env.TWELVE_DATA_MAX_CONCURRENT_REQUESTS, 1);
 const TWELVE_DATA_MIN_DELAY_MS = parseEnvNumber(
     process.env.TWELVE_DATA_MIN_DELAY_MS,
-    Math.ceil(MINUTE_MS / TWELVE_DATA_MAX_REQUESTS_PER_MINUTE),
+    0,
 );
 
 const INDICATOR_TIMEOUT_MS = Math.max(
@@ -50,6 +47,7 @@ type MarketCacheState = {
     entries: Map<string, MarketCacheEntry>;
     refreshing: Promise<void> | null;
     lastRefresh: number;
+    indicatorCursor: number;
 };
 
 type IndicatorPayload = {
@@ -58,6 +56,8 @@ type IndicatorPayload = {
 };
 
 type IndicatorResponse = Record<string, IndicatorPayload>;
+type IndicatorType = 'rsi' | 'macd' | 'sma';
+const INDICATOR_TYPES: IndicatorType[] = ['rsi', 'macd', 'sma'];
 
 declare global {
     var __turtelliMarketCache: MarketCacheState | undefined;
@@ -69,6 +69,7 @@ function getCacheState(): MarketCacheState {
             entries: new Map(),
             refreshing: null,
             lastRefresh: 0,
+            indicatorCursor: 0,
         };
     }
     return globalThis.__turtelliMarketCache;
@@ -229,6 +230,35 @@ const chunk = <T,>(arr: T[], size: number): T[][] => {
         result.push(arr.slice(i, i + size));
     }
     return result;
+};
+
+const selectIndicatorSymbols = (symbols: string[]): string[] => {
+    if (!HAS_TWELVE_DATA) {
+        return [];
+    }
+
+    const uniqueSymbols = Array.from(new Set(symbols));
+    if (uniqueSymbols.length === 0) {
+        cacheState.indicatorCursor = 0;
+        return [];
+    }
+
+    const symbolsPerMinute = Math.max(0, Math.floor(TWELVE_DATA_MAX_REQUESTS_PER_MINUTE / INDICATOR_TYPES.length));
+    if (symbolsPerMinute <= 0) {
+        return [];
+    }
+
+    const takeCount = Math.min(symbolsPerMinute, uniqueSymbols.length);
+    const cursor = cacheState.indicatorCursor % uniqueSymbols.length;
+    const selection: string[] = [];
+
+    for (let i = 0; selection.length < takeCount; i += 1) {
+        const symbol = uniqueSymbols[(cursor + i) % uniqueSymbols.length];
+        selection.push(symbol);
+    }
+
+    cacheState.indicatorCursor = (cursor + takeCount) % uniqueSymbols.length;
+    return selection;
 };
 
 const emptyIndicators = (): IndicatorSnapshot => ({
@@ -468,19 +498,29 @@ async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
     }
 }
 
-type IndicatorType = 'rsi' | 'macd' | 'sma';
-
 async function fetchIndicatorBundle(symbols: string[]): Promise<Record<string, IndicatorSnapshot>> {
     const results: Record<string, IndicatorSnapshot> = {};
 
-    if (!HAS_TWELVE_DATA) {
-        symbols.forEach((symbol) => {
+    const uniqueSymbols = Array.from(new Set(symbols));
+    if (!HAS_TWELVE_DATA || uniqueSymbols.length === 0) {
+        uniqueSymbols.forEach((symbol) => {
             results[symbol] = emptyIndicators();
         });
         return results;
     }
 
-    if (symbols.length === 0) {
+    const fetchableSymbols = selectIndicatorSymbols(uniqueSymbols);
+    const fetchableSet = new Set(fetchableSymbols);
+    const skippedSymbols = uniqueSymbols.filter((symbol) => !fetchableSet.has(symbol));
+
+    if (skippedSymbols.length) {
+        skippedSymbols.forEach((symbol) => {
+            results[symbol] = emptyIndicators();
+        });
+        console.warn(`[market] Indicator budget limited to ${fetchableSymbols.length} symbols, returning empty snapshots for ${skippedSymbols.length}`);
+    }
+
+    if (fetchableSymbols.length === 0) {
         return results;
     }
 
@@ -510,7 +550,7 @@ async function fetchIndicatorBundle(symbols: string[]): Promise<Record<string, I
         });
     };
 
-    const fallbackChunks = chunk(symbols, INDICATOR_CHUNK_SIZE);
+    const fallbackChunks = chunk(fetchableSymbols, INDICATOR_CHUNK_SIZE);
     for (let i = 0; i < fallbackChunks.length; i += 1) {
         const group = fallbackChunks[i];
         try {
