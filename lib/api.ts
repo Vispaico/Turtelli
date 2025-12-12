@@ -2,16 +2,44 @@ import { IndicatorSnapshot, MarketData, OHLC, MARKET_UNIVERSE } from './types';
 
 const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || process.env.TWELVEDATA_API_KEY || '';
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || '';
+const HAS_FINNHUB = Boolean(FINNHUB_API_KEY);
+const HAS_TWELVE_DATA = Boolean(TWELVE_DATA_API_KEY);
 
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
+const MINUTE_MS = 60 * 1000;
 const HISTORY_DAYS = 90;
 const CACHE_DURATION = 60 * 60 * 1000; // 1 hour
 const BATCH_SIZE = 3; // 2-3 tickers per batch as requested
-const BATCH_DELAY_MS = 5000; // 5 second spacing between batches
-const INDICATOR_DELAY_MS = 5000;
+const BATCH_DELAY_MS = Number(process.env.MARKET_BATCH_DELAY_MS ?? '0');
+const MAX_REFRESH_WAIT_MS = 4000;
+const INDICATOR_TIMEOUT_BASE_MS = 4500;
 const INDICATOR_CHUNK_SIZE = 6;
+
+const parseEnvNumber = (value: string | undefined, fallback: number): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const FINNHUB_MAX_REQUESTS_PER_MINUTE = parseEnvNumber(process.env.FINNHUB_MAX_REQUESTS_PER_MINUTE, 45);
+const FINNHUB_MAX_CONCURRENT_REQUESTS = parseEnvNumber(process.env.FINNHUB_MAX_CONCURRENT_REQUESTS, 1);
+const FINNHUB_MIN_DELAY_MS = parseEnvNumber(
+    process.env.FINNHUB_MIN_DELAY_MS,
+    Math.ceil(MINUTE_MS / FINNHUB_MAX_REQUESTS_PER_MINUTE),
+);
+
+const TWELVE_DATA_MAX_REQUESTS_PER_MINUTE = parseEnvNumber(process.env.TWELVE_DATA_MAX_REQUESTS_PER_MINUTE, 8);
+const TWELVE_DATA_MAX_CONCURRENT_REQUESTS = parseEnvNumber(process.env.TWELVE_DATA_MAX_CONCURRENT_REQUESTS, 1);
+const TWELVE_DATA_MIN_DELAY_MS = parseEnvNumber(
+    process.env.TWELVE_DATA_MIN_DELAY_MS,
+    Math.ceil(MINUTE_MS / TWELVE_DATA_MAX_REQUESTS_PER_MINUTE),
+);
+
+const INDICATOR_TIMEOUT_MS = Math.max(
+    INDICATOR_TIMEOUT_BASE_MS,
+    (TWELVE_DATA_MIN_DELAY_MS * 3) + 1000,
+);
 
 type MarketCacheEntry = {
     data: MarketData;
@@ -48,7 +76,152 @@ function getCacheState(): MarketCacheState {
 
 const cacheState = getCacheState();
 
+const finnhubLimiter = HAS_FINNHUB
+    ? createRateLimiter({
+        maxRequestsPerInterval: FINNHUB_MAX_REQUESTS_PER_MINUTE,
+        intervalMs: MINUTE_MS,
+        maxConcurrent: FINNHUB_MAX_CONCURRENT_REQUESTS,
+        minDelayMs: FINNHUB_MIN_DELAY_MS,
+    })
+    : null;
+
+const twelveDataLimiter = HAS_TWELVE_DATA
+    ? createRateLimiter({
+        maxRequestsPerInterval: TWELVE_DATA_MAX_REQUESTS_PER_MINUTE,
+        intervalMs: MINUTE_MS,
+        maxConcurrent: TWELVE_DATA_MAX_CONCURRENT_REQUESTS,
+        minDelayMs: TWELVE_DATA_MIN_DELAY_MS,
+    })
+    : null;
+
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+type RateLimiterOptions = {
+    maxRequestsPerInterval: number;
+    intervalMs: number;
+    maxConcurrent?: number;
+    minDelayMs?: number;
+};
+
+type RateLimiter = {
+    schedule<T>(task: () => Promise<T>): Promise<T>;
+};
+
+const createRateLimiter = (options: RateLimiterOptions): RateLimiter => {
+    const intervalMs = Math.max(1000, options.intervalMs);
+    const maxRequests = Math.max(1, options.maxRequestsPerInterval);
+    const maxConcurrent = Math.max(1, Math.floor(options.maxConcurrent ?? 1));
+    const minDelayMs = Math.max(0, options.minDelayMs ?? Math.ceil(intervalMs / maxRequests));
+
+    const queue: Array<() => void> = [];
+    let active = 0;
+    let timestamps: number[] = [];
+    let timer: NodeJS.Timeout | null = null;
+    let lastStart = 0;
+
+    const flushWindow = () => {
+        const now = Date.now();
+        timestamps = timestamps.filter((ts) => now - ts < intervalMs);
+        return now;
+    };
+
+    const scheduleTimer = (waitMs: number) => {
+        if (timer) return;
+        timer = setTimeout(() => {
+            timer = null;
+            processQueue();
+        }, Math.max(50, waitMs));
+    };
+
+    const processQueue = () => {
+        if (!queue.length) {
+            return;
+        }
+
+        const now = flushWindow();
+
+        if (active >= maxConcurrent) {
+            return;
+        }
+
+        if (timestamps.length >= maxRequests) {
+            const wait = intervalMs - (now - timestamps[0]);
+            scheduleTimer(wait);
+            return;
+        }
+
+        const sinceLast = now - lastStart;
+        if (sinceLast < minDelayMs) {
+            scheduleTimer(minDelayMs - sinceLast);
+            return;
+        }
+
+        const task = queue.shift();
+        if (!task) return;
+
+        active += 1;
+        timestamps.push(now);
+        lastStart = now;
+        task();
+    };
+
+    const release = () => {
+        active = Math.max(0, active - 1);
+        processQueue();
+    };
+
+    return {
+        schedule<T>(task: () => Promise<T>): Promise<T> {
+            return new Promise<T>((resolve, reject) => {
+                const runTask = () => {
+                    Promise.resolve()
+                        .then(task)
+                        .then(resolve, reject)
+                        .finally(release);
+                };
+                queue.push(runTask);
+                processQueue();
+            });
+        },
+    };
+};
+
+const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
+    if (timeoutMs <= 0) {
+        return promise;
+    }
+    let timer: NodeJS.Timeout | null = null;
+    try {
+        const result = await Promise.race([
+            promise,
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+            }),
+        ]);
+        return result;
+    } finally {
+        if (timer) {
+            clearTimeout(timer);
+        }
+    }
+};
+
+const waitWithTimeout = async (promise: Promise<void>, timeoutMs: number): Promise<'completed' | 'timeout'> => {
+    let timer: NodeJS.Timeout | null = null;
+    try {
+        const result = await Promise.race([
+            promise.then(() => 'completed' as const, () => 'completed' as const),
+            new Promise<'timeout'>((resolve) => {
+                timer = setTimeout(() => resolve('timeout'), timeoutMs);
+            }),
+        ]);
+        return result;
+    } finally {
+        if (timer) {
+            clearTimeout(timer);
+        }
+    }
+};
 
 const chunk = <T,>(arr: T[], size: number): T[][] => {
     const result: T[][] = [];
@@ -65,6 +238,12 @@ const emptyIndicators = (): IndicatorSnapshot => ({
     macdSignal: null,
     macdHistogram: null,
 });
+
+const isRateLimitError = (error: unknown) => {
+    if (!(error instanceof Error)) return false;
+    const message = error.message.toLowerCase();
+    return message.includes('api credits') || message.includes('429');
+};
 
 const createMockData = (symbol: string): MarketData => {
     const ohlc: OHLC[] = [];
@@ -97,6 +276,12 @@ const createMockData = (symbol: string): MarketData => {
 };
 
 export async function fetchMarketData(symbol: string, options: { force?: boolean } = {}): Promise<MarketData | null> {
+    if (!HAS_FINNHUB) {
+        const mock = createMockData(symbol);
+        cacheState.entries.set(symbol, { data: mock, timestamp: Date.now() });
+        return mock;
+    }
+
     const now = Date.now();
     const cached = cacheState.entries.get(symbol);
     const isFresh = cached && now - cached.timestamp < CACHE_DURATION;
@@ -110,6 +295,19 @@ export async function fetchMarketData(symbol: string, options: { force?: boolean
 
 export async function fetchAllMarketData(symbols: string[]): Promise<MarketData[]> {
     const uniqueSymbols = symbols.filter((symbol) => MARKET_UNIVERSE[symbol]);
+
+    if (!HAS_FINNHUB) {
+        return uniqueSymbols.map((symbol) => {
+            const cached = cacheState.entries.get(symbol);
+            if (cached) {
+                return cached.data;
+            }
+            const mock = createMockData(symbol);
+            cacheState.entries.set(symbol, { data: mock, timestamp: Date.now() });
+            return mock;
+        });
+    }
+
     const now = Date.now();
     const staleSymbols = uniqueSymbols.filter((symbol) => {
         const cached = cacheState.entries.get(symbol);
@@ -121,7 +319,15 @@ export async function fetchAllMarketData(symbols: string[]): Promise<MarketData[
     }
 
     const results = uniqueSymbols
-        .map((symbol) => cacheState.entries.get(symbol)?.data ?? createMockData(symbol))
+        .map((symbol) => {
+            const cachedEntry = cacheState.entries.get(symbol);
+            if (cachedEntry) {
+                return cachedEntry.data;
+            }
+            const mock = createMockData(symbol);
+            cacheState.entries.set(symbol, { data: mock, timestamp: Date.now() });
+            return mock;
+        })
         .filter((data): data is MarketData => Boolean(data));
 
     return results;
@@ -131,8 +337,15 @@ async function ensureRefreshed(symbols: string[], force = false) {
     const uniqueSymbols = Array.from(new Set(symbols)).filter((symbol) => MARKET_UNIVERSE[symbol]);
     if (uniqueSymbols.length === 0) return;
 
-    if (cacheState.refreshing && !force) {
-        await cacheState.refreshing;
+    if (cacheState.refreshing) {
+        if (force) {
+            await cacheState.refreshing;
+        } else {
+            const waitResult = await waitWithTimeout(cacheState.refreshing, MAX_REFRESH_WAIT_MS);
+            if (waitResult === 'timeout') {
+                return;
+            }
+        }
         const now = Date.now();
         const stillStale = uniqueSymbols.some((symbol) => {
             const cached = cacheState.entries.get(symbol);
@@ -150,7 +363,15 @@ async function ensureRefreshed(symbols: string[], force = false) {
         }
     });
 
-    await cacheState.refreshing;
+    cacheState.refreshing.catch((error) => {
+        console.error('[market] Refresh failed', error);
+    });
+
+    if (force) {
+        await cacheState.refreshing;
+    } else {
+        await waitWithTimeout(cacheState.refreshing, MAX_REFRESH_WAIT_MS);
+    }
 }
 
 async function refreshUniverse(symbols: string[]) {
@@ -216,7 +437,7 @@ async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
     url.searchParams.set('to', String(nowSeconds));
     url.searchParams.set('token', FINNHUB_API_KEY);
 
-    try {
+    const runRequest = async () => {
         const response = await fetch(url.toString());
         const data = await response.json();
 
@@ -234,6 +455,13 @@ async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
         }));
 
         return candles.slice(-HISTORY_DAYS);
+    };
+
+    try {
+        if (finnhubLimiter) {
+            return await finnhubLimiter.schedule(runRequest);
+        }
+        return await runRequest();
     } catch (error) {
         console.error(`[market] Finnhub request failed for ${meta.symbol}`, error);
         return null;
@@ -245,7 +473,7 @@ type IndicatorType = 'rsi' | 'macd' | 'sma';
 async function fetchIndicatorBundle(symbols: string[]): Promise<Record<string, IndicatorSnapshot>> {
     const results: Record<string, IndicatorSnapshot> = {};
 
-    if (!TWELVE_DATA_API_KEY) {
+    if (!HAS_TWELVE_DATA) {
         symbols.forEach((symbol) => {
             results[symbol] = emptyIndicators();
         });
@@ -259,11 +487,11 @@ async function fetchIndicatorBundle(symbols: string[]): Promise<Record<string, I
     const populateSnapshot = async (symbolGroup: string[]) => {
         const twelveSymbols = symbolGroup.map((symbol) => MARKET_UNIVERSE[symbol].twelveDataSymbol);
 
-        const rsiRaw = await fetchIndicatorSeries('rsi', twelveSymbols);
-        await delay(INDICATOR_DELAY_MS);
-        const macdRaw = await fetchIndicatorSeries('macd', twelveSymbols);
-        await delay(INDICATOR_DELAY_MS);
-        const smaRaw = await fetchIndicatorSeries('sma', twelveSymbols);
+        const [rsiRaw, macdRaw, smaRaw] = await Promise.all([
+            fetchIndicatorSeries('rsi', twelveSymbols),
+            fetchIndicatorSeries('macd', twelveSymbols),
+            fetchIndicatorSeries('sma', twelveSymbols),
+        ]);
 
         symbolGroup.forEach((symbol) => {
             const twelveSymbol = MARKET_UNIVERSE[symbol].twelveDataSymbol;
@@ -282,23 +510,23 @@ async function fetchIndicatorBundle(symbols: string[]): Promise<Record<string, I
         });
     };
 
-    try {
-        await populateSnapshot(symbols);
-    } catch (error) {
-        console.warn('[market] Batch indicator request failed, retrying with smaller chunks', error);
-        const fallbackChunks = chunk(symbols, INDICATOR_CHUNK_SIZE);
-        for (let i = 0; i < fallbackChunks.length; i += 1) {
-            const group = fallbackChunks[i];
-            try {
-                await populateSnapshot(group);
-            } catch (chunkError) {
-                console.error('[market] Indicator chunk failed', chunkError);
-                group.forEach((symbol) => {
-                    results[symbol] = emptyIndicators();
-                });
-            }
-            if (i < fallbackChunks.length - 1) {
-                await delay(BATCH_DELAY_MS);
+    const fallbackChunks = chunk(symbols, INDICATOR_CHUNK_SIZE);
+    for (let i = 0; i < fallbackChunks.length; i += 1) {
+        const group = fallbackChunks[i];
+        try {
+            await withTimeout(populateSnapshot(group), INDICATOR_TIMEOUT_MS, 'Indicator fetch timed out');
+        } catch (error) {
+            console.warn('[market] Indicator chunk failed, using empty snapshot', error);
+            group.forEach((symbol) => {
+                results[symbol] = emptyIndicators();
+            });
+            if (isRateLimitError(error)) {
+                for (let j = i + 1; j < fallbackChunks.length; j += 1) {
+                    fallbackChunks[j].forEach((symbol) => {
+                        results[symbol] = emptyIndicators();
+                    });
+                }
+                break;
             }
         }
     }
@@ -336,22 +564,29 @@ async function fetchIndicatorSeries(type: IndicatorType, symbols: string[]): Pro
         url.searchParams.set('signal_period', '9');
     }
 
-    const response = await fetch(url.toString());
-    if (!response.ok) {
-        throw new Error(`Indicator ${type} HTTP ${response.status}`);
-    }
-    const data = await response.json();
+    const runRequest = async () => {
+        const response = await fetch(url.toString());
+        if (!response.ok) {
+            throw new Error(`Indicator ${type} HTTP ${response.status}`);
+        }
+        const data = await response.json();
 
-    if (data.code === 429 || data.status === 'error') {
-        throw new Error(data.message || `Indicator ${type} error`);
+        if (data.code === 429 || data.status === 'error') {
+            throw new Error(data.message || `Indicator ${type} error`);
+        }
+
+        if (symbols.length === 1 && !data[symbols[0]]) {
+            return { [symbols[0]]: data } as IndicatorResponse;
+        }
+
+        return data as IndicatorResponse;
+    };
+
+    if (twelveDataLimiter) {
+        return twelveDataLimiter.schedule(runRequest);
     }
 
-    // Single symbol responses are not wrapped
-    if (symbols.length === 1 && !data[symbols[0]]) {
-        return { [symbols[0]]: data } as IndicatorResponse;
-    }
-
-    return data as IndicatorResponse;
+    return runRequest();
 }
 
 function extractSingleValue(source: IndicatorResponse, symbol: string, key: 'rsi' | 'sma'): number | null {
