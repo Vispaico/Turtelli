@@ -74,26 +74,6 @@ function getCacheState(): MarketCacheState {
     return globalThis.__turtelliMarketCache;
 }
 
-const cacheState = getCacheState();
-
-const finnhubLimiter = HAS_FINNHUB
-    ? createRateLimiter({
-        maxRequestsPerInterval: FINNHUB_MAX_REQUESTS_PER_MINUTE,
-        intervalMs: MINUTE_MS,
-        maxConcurrent: FINNHUB_MAX_CONCURRENT_REQUESTS,
-        minDelayMs: FINNHUB_MIN_DELAY_MS,
-    })
-    : null;
-
-const twelveDataLimiter = HAS_TWELVE_DATA
-    ? createRateLimiter({
-        maxRequestsPerInterval: TWELVE_DATA_MAX_REQUESTS_PER_MINUTE,
-        intervalMs: MINUTE_MS,
-        maxConcurrent: TWELVE_DATA_MAX_CONCURRENT_REQUESTS,
-        minDelayMs: TWELVE_DATA_MIN_DELAY_MS,
-    })
-    : null;
-
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type RateLimiterOptions = {
@@ -185,6 +165,26 @@ const createRateLimiter = (options: RateLimiterOptions): RateLimiter => {
         },
     };
 };
+
+const cacheState = getCacheState();
+
+const finnhubLimiter = HAS_FINNHUB
+    ? createRateLimiter({
+        maxRequestsPerInterval: FINNHUB_MAX_REQUESTS_PER_MINUTE,
+        intervalMs: MINUTE_MS,
+        maxConcurrent: FINNHUB_MAX_CONCURRENT_REQUESTS,
+        minDelayMs: FINNHUB_MIN_DELAY_MS,
+    })
+    : null;
+
+const twelveDataLimiter = HAS_TWELVE_DATA
+    ? createRateLimiter({
+        maxRequestsPerInterval: TWELVE_DATA_MAX_REQUESTS_PER_MINUTE,
+        intervalMs: MINUTE_MS,
+        maxConcurrent: TWELVE_DATA_MAX_CONCURRENT_REQUESTS,
+        minDelayMs: TWELVE_DATA_MIN_DELAY_MS,
+    })
+    : null;
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number, timeoutMessage: string): Promise<T> => {
     if (timeoutMs <= 0) {
