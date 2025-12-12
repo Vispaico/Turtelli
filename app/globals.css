@@ -1,26 +1,85 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
+@theme {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+  --color-accent-green: var(--accent-green);
+  --color-accent-red: var(--accent-red);
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+  --animate-fade-in: fadeIn 0.5s ease-out forwards;
+  --animate-scroll: scroll 30s linear infinite;
+
+  @keyframes fadeIn {
+    0% { opacity: 0; transform: translateY(10px); }
+    100% { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes scroll {
+    0% { transform: translateX(0); }
+    100% { transform: translateX(-50%); }
   }
 }
 
+:root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 10, 25, 47; /* Navy */
+  --background-end-rgb: 0, 0, 0; /* Black */
+  
+  --background: linear-gradient(to bottom, rgb(10, 25, 47), rgb(0, 0, 0));
+  --foreground: rgb(255, 255, 255);
+  
+  --accent-green: #00ff9d;
+  --accent-red: #ff4d4d;
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --card-border: rgba(255, 255, 255, 0.1);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --foreground-rgb: 0, 0, 0;
+    --background-start-rgb: 240, 242, 245;
+    --background-end-rgb: 255, 255, 255;
+    
+    --background: linear-gradient(to bottom, rgb(240, 242, 245), rgb(255, 255, 255));
+    --foreground: rgb(0, 0, 0);
+    
+    --accent-green: #00c853;
+    --accent-red: #d50000;
+    --card-bg: #ffffff;
+    --card-border: #e0e0e0;
+  }
+}
+
+/* Manual Dark Mode Toggle Support via class 'dark' */
+.dark :root {
+  --foreground-rgb: 255, 255, 255;
+  --background-start-rgb: 10, 25, 47;
+  --background-end-rgb: 0, 0, 0;
+  
+  --background: linear-gradient(to bottom, rgb(10, 25, 47), rgb(0, 0, 0));
+  --foreground: rgb(255, 255, 255);
+  
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --card-border: rgba(255, 255, 255, 0.1);
+}
+
 body {
-  background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--background) fixed;
+  font-family: 'Inter', sans-serif;
+}
+
+/* Utilities */
+.glass-card {
+  background: var(--card-bg);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+}
+
+.text-accent-green {
+  color: var(--accent-green);
+}
+
+.text-accent-red {
+  color: var(--accent-red);
 }
