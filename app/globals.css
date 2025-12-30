@@ -62,10 +62,100 @@ body {
   border-radius: 12px;
 }
 
+/* Navbar needs a more opaque background for visibility on white pages */
+.glass-card.navbar {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+html.dark .glass-card.navbar {
+  background: rgba(10, 25, 47, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .text-accent-green {
   color: var(--accent-green);
 }
 
 .text-accent-red {
   color: var(--accent-red);
+}
+
+/* Article content (generated HTML) */
+.article-content {
+  max-width: 100%;
+}
+
+.article-content p {
+  margin-top: 1rem;
+  opacity: 1;
+  color: #0f172a;
+  line-height: 1.75;
+}
+
+.article-content h2 {
+  margin-top: 2.5rem;
+  font-size: 1.5rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.article-content h3 {
+  margin-top: 1.75rem;
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.article-content ul,
+.article-content ol {
+  margin-top: 1rem;
+  padding-left: 1.25rem;
+  opacity: 1;
+  color: #0f172a;
+}
+
+.article-content ul {
+  list-style: disc;
+}
+
+.article-content ol {
+  list-style: decimal;
+}
+
+.article-content li {
+  margin-top: 0.5rem;
+  line-height: 1.7;
+}
+
+.article-content a {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.article-content a:hover {
+  color: var(--accent-green);
+}
+
+.article-content .callout {
+  margin-top: 1.25rem;
+  padding: 1.25rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+
+.article-content .callout-title {
+  font-size: 0.75rem;
+  opacity: 1;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* On article pages, use a light “paper” card style for glass-card components */
+.article-page .glass-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  backdrop-filter: none;
 }

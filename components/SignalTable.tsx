@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Signal, INDICES, STOCKS } from '@/lib/types';
 import { ArrowUp, ArrowDown } from 'lucide-react';
 
@@ -9,9 +9,19 @@ type SignalTab = 'INDICES' | 'STOCKS';
 export default function SignalTable({ signals }: { signals: Signal[] }) {
     const [tab, setTab] = useState<SignalTab>('INDICES');
 
-    const filteredSignals = signals.filter((signal) => (
-        tab === 'INDICES' ? INDICES.includes(signal.symbol) : STOCKS.includes(signal.symbol)
-    ));
+    const filteredSignals = useMemo(() => {
+        if (!signals.length) return [];
+
+        const universeReady = (INDICES.length + STOCKS.length) > 0;
+        if (!universeReady) return signals;
+
+        const allowed = tab === 'INDICES' ? new Set(INDICES) : new Set(STOCKS);
+        const matched = signals.filter((signal) => allowed.has(signal.symbol));
+
+        // If the tab-filter produces no matches but we clearly have data, fall back to showing everything.
+        // This prevents a blank UI if symbol lists get out of sync with API payloads.
+        return matched.length ? matched : signals;
+    }, [signals, tab]);
 
     return (
         <div className="glass-card overflow-hidden">
@@ -28,6 +38,10 @@ export default function SignalTable({ signals }: { signals: Signal[] }) {
                         </button>
                     ))}
                 </div>
+            </div>
+
+            <div className="px-4 py-2 text-xs opacity-60 border-b border-white/5">
+                Showing {filteredSignals.length} of {signals.length}
             </div>
 
             <div className="overflow-x-auto">

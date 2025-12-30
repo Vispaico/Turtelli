@@ -85,7 +85,8 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'Euro Stoxx 50',
     type: 'index',
     finnhubSymbol: '^STOXX50E',
-    twelveDataSymbol: 'SX5E',
+    // TwelveData free tier often doesn't support direct index symbols; use a liquid proxy ETF.
+    twelveDataSymbol: 'FEZ',
     igSpread: 1.2,
   },
   GDAXI: {
@@ -93,7 +94,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'DAX',
     type: 'index',
     finnhubSymbol: '^GDAXI',
-    twelveDataSymbol: 'GDAXI',
+    twelveDataSymbol: 'EWG',
     igSpread: 1.3,
   },
   MDAX: {
@@ -101,7 +102,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'MDAX',
     type: 'index',
     finnhubSymbol: '^MDAXI',
-    twelveDataSymbol: 'MDAX',
+    twelveDataSymbol: 'EWG',
     igSpread: 1.6,
   },
   FCHI: {
@@ -109,7 +110,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'CAC 40',
     type: 'index',
     finnhubSymbol: '^FCHI',
-    twelveDataSymbol: 'FCHI',
+    twelveDataSymbol: 'EWQ',
     igSpread: 1.4,
   },
   IBEX: {
@@ -117,7 +118,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'IBEX 35',
     type: 'index',
     finnhubSymbol: '^IBEX',
-    twelveDataSymbol: 'IBEX',
+    twelveDataSymbol: 'EWP',
     igSpread: 1.8,
   },
   FTSE: {
@@ -125,7 +126,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'FTSE 100',
     type: 'index',
     finnhubSymbol: '^FTSE',
-    twelveDataSymbol: 'FTSE',
+    twelveDataSymbol: 'EWU',
     igSpread: 1.0,
   },
   N225: {
@@ -133,7 +134,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'Nikkei 225',
     type: 'index',
     finnhubSymbol: '^N225',
-    twelveDataSymbol: 'N225',
+    twelveDataSymbol: 'EWJ',
     igSpread: 2.0,
   },
   HSI: {
@@ -141,7 +142,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'Hang Seng',
     type: 'index',
     finnhubSymbol: '^HSI',
-    twelveDataSymbol: 'HSI',
+    twelveDataSymbol: 'EWH',
     igSpread: 2.1,
   },
   FXI: {
@@ -157,7 +158,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'Dow Futures',
     type: 'index',
     finnhubSymbol: 'YM1!',
-    twelveDataSymbol: 'YM',
+    twelveDataSymbol: 'DIA',
     igSpread: 2.4,
   },
   SPX: {
@@ -165,7 +166,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'S&P 500',
     type: 'index',
     finnhubSymbol: '^GSPC',
-    twelveDataSymbol: 'SPX',
+    twelveDataSymbol: 'SPY',
     igSpread: 0.9,
   },
   DJI: {
@@ -173,7 +174,7 @@ export const MARKET_UNIVERSE: Record<string, InstrumentMeta> = {
     displayName: 'Dow Jones',
     type: 'index',
     finnhubSymbol: '^DJI',
-    twelveDataSymbol: 'DJI',
+    twelveDataSymbol: 'DIA',
     igSpread: 1.5,
   },
   SPY: {

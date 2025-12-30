@@ -4,9 +4,16 @@ const TWELVE_DATA_API_KEY = process.env.TWELVE_DATA_API_KEY || process.env.TWELV
 const FINNHUB_API_KEY = process.env.FINNHUB_API_KEY || '';
 const HAS_FINNHUB = Boolean(FINNHUB_API_KEY);
 const HAS_TWELVE_DATA = Boolean(TWELVE_DATA_API_KEY);
+const HAS_MARKET_CANDLES = HAS_TWELVE_DATA || HAS_FINNHUB;
+const INDICATORS_ENABLED = process.env.MARKET_ENABLE_INDICATORS === '1';
 
 const TWELVE_DATA_BASE = 'https://api.twelvedata.com';
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
+
+const parseEnvNumber = (value: string | undefined, fallback: number): number => {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
 
 const MINUTE_MS = 60 * 1000;
 const HISTORY_DAYS = 90;
@@ -14,13 +21,12 @@ const CACHE_DURATION = 60 * 60 * 1000; // 1 hour
 const BATCH_SIZE = 3; // 2-3 tickers per batch as requested
 const BATCH_DELAY_MS = Number(process.env.MARKET_BATCH_DELAY_MS ?? '0');
 const MAX_REFRESH_WAIT_MS = 4000;
+const EMPTY_CACHE_WAIT_MS = parseEnvNumber(process.env.MARKET_EMPTY_CACHE_WAIT_MS, 9000);
 const INDICATOR_TIMEOUT_BASE_MS = 4500;
 const INDICATOR_CHUNK_SIZE = 6;
 
-const parseEnvNumber = (value: string | undefined, fallback: number): number => {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
+const FORCE_REFRESH_WAIT_MS = parseEnvNumber(process.env.MARKET_FORCE_REFRESH_WAIT_MS, 4000);
+const FORCE_REFRESH_MIN_INTERVAL_MS = parseEnvNumber(process.env.MARKET_FORCE_REFRESH_MIN_INTERVAL_MS, 60_000);
 
 const FINNHUB_MAX_REQUESTS_PER_MINUTE = parseEnvNumber(process.env.FINNHUB_MAX_REQUESTS_PER_MINUTE, 45);
 const FINNHUB_MAX_CONCURRENT_REQUESTS = parseEnvNumber(process.env.FINNHUB_MAX_CONCURRENT_REQUESTS, 1);
@@ -32,6 +38,7 @@ const TWELVE_DATA_MIN_DELAY_MS = parseEnvNumber(
     process.env.TWELVE_DATA_MIN_DELAY_MS,
     0,
 );
+
 
 const INDICATOR_TIMEOUT_MS = Math.max(
     INDICATOR_TIMEOUT_BASE_MS,
@@ -48,6 +55,8 @@ type MarketCacheState = {
     refreshing: Promise<void> | null;
     lastRefresh: number;
     indicatorCursor: number;
+    candleCursor: number;
+    unsupportedCandleSymbols: Set<string>;
 };
 
 type IndicatorPayload = {
@@ -58,6 +67,15 @@ type IndicatorPayload = {
 type IndicatorResponse = Record<string, IndicatorPayload>;
 type IndicatorType = 'rsi' | 'macd' | 'sma';
 const INDICATOR_TYPES: IndicatorType[] = ['rsi', 'macd', 'sma'];
+
+type TimeSeriesPayload = {
+    status?: string;
+    values?: Array<Record<string, string | number>>;
+    message?: string;
+    code?: number;
+};
+
+type TimeSeriesResponse = Record<string, TimeSeriesPayload>;
 
 declare global {
     var __turtelliMarketCache: MarketCacheState | undefined;
@@ -70,8 +88,19 @@ function getCacheState(): MarketCacheState {
             refreshing: null,
             lastRefresh: 0,
             indicatorCursor: 0,
+            candleCursor: 0,
+            unsupportedCandleSymbols: new Set(),
         };
     }
+
+    // Backwards-compat if cache shape changes during dev.
+    if (typeof globalThis.__turtelliMarketCache.candleCursor !== 'number') {
+        globalThis.__turtelliMarketCache.candleCursor = 0;
+    }
+    if (!(globalThis.__turtelliMarketCache.unsupportedCandleSymbols instanceof Set)) {
+        globalThis.__turtelliMarketCache.unsupportedCandleSymbols = new Set();
+    }
+
     return globalThis.__turtelliMarketCache;
 }
 
@@ -224,6 +253,17 @@ const waitWithTimeout = async (promise: Promise<void>, timeoutMs: number): Promi
     }
 };
 
+const waitForFirstCacheEntry = async (timeoutMs: number): Promise<'completed' | 'timeout'> => {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    while (Date.now() < deadline) {
+        if (cacheState.entries.size > 0) {
+            return 'completed';
+        }
+        await delay(150);
+    }
+    return cacheState.entries.size > 0 ? 'completed' : 'timeout';
+};
+
 const chunk = <T,>(arr: T[], size: number): T[][] => {
     const result: T[][] = [];
     for (let i = 0; i < arr.length; i += size) {
@@ -261,6 +301,55 @@ const selectIndicatorSymbols = (symbols: string[]): string[] => {
     return selection;
 };
 
+
+const selectCandleSymbols = (symbols: string[]): string[] => {
+    if (!HAS_TWELVE_DATA) {
+        return symbols;
+    }
+
+    const uniqueSymbols = Array.from(new Set(symbols))
+        .filter((symbol) => !cacheState.unsupportedCandleSymbols.has(symbol));
+    if (uniqueSymbols.length === 0) {
+        cacheState.candleCursor = 0;
+        return [];
+    }
+
+    // Prefer instruments that are more likely to be supported by TwelveData (stocks/ETFs before indices).
+    const orderedSymbols = uniqueSymbols
+        .slice()
+        .sort((a, b) => {
+            const aMeta = MARKET_UNIVERSE[a];
+            const bMeta = MARKET_UNIVERSE[b];
+            const aIsIndex = Boolean(aMeta?.finnhubSymbol?.startsWith('^'));
+            const bIsIndex = Boolean(bMeta?.finnhubSymbol?.startsWith('^'));
+            const aPriority = aMeta?.type === 'stock' ? 0 : (aIsIndex ? 2 : 1);
+            const bPriority = bMeta?.type === 'stock' ? 0 : (bIsIndex ? 2 : 1);
+            if (aPriority !== bPriority) return aPriority - bPriority;
+            return a.localeCompare(b);
+        });
+
+    // TwelveData enforces a per-minute credit limit; treat TWELVE_DATA_MAX_REQUESTS_PER_MINUTE as credits/symbols per minute.
+    const symbolsPerMinute = Math.max(1, Math.floor(TWELVE_DATA_MAX_REQUESTS_PER_MINUTE));
+    const takeCount = Math.min(symbolsPerMinute, orderedSymbols.length);
+    const cursor = cacheState.candleCursor % orderedSymbols.length;
+
+    const selection: string[] = [];
+    for (let i = 0; selection.length < takeCount; i += 1) {
+        selection.push(orderedSymbols[(cursor + i) % orderedSymbols.length]);
+    }
+
+    cacheState.candleCursor = (cursor + takeCount) % orderedSymbols.length;
+    return selection;
+};
+
+const isPermanentSymbolError = (error: unknown): boolean => {
+    if (!(error instanceof Error)) return false;
+    const msg = error.message.toLowerCase();
+    return msg.includes('symbol') && msg.includes('invalid')
+        || msg.includes('available starting with')
+        || msg.includes('grow plan')
+        || msg.includes('pro plan');
+};
 const emptyIndicators = (): IndicatorSnapshot => ({
     rsi14: null,
     sma20: null,
@@ -306,7 +395,7 @@ const createMockData = (symbol: string): MarketData => {
 };
 
 export async function fetchMarketData(symbol: string, options: { force?: boolean } = {}): Promise<MarketData | null> {
-    if (!HAS_FINNHUB) {
+    if (!HAS_MARKET_CANDLES) {
         const mock = createMockData(symbol);
         cacheState.entries.set(symbol, { data: mock, timestamp: Date.now() });
         return mock;
@@ -330,7 +419,7 @@ export async function fetchAllMarketData(
     const uniqueSymbols = symbols.filter((symbol) => MARKET_UNIVERSE[symbol]);
     const force = Boolean(options.force);
 
-    if (!HAS_FINNHUB) {
+    if (!HAS_MARKET_CANDLES) {
         return uniqueSymbols.map((symbol) => {
             const cached = cacheState.entries.get(symbol);
             if (cached) {
@@ -360,9 +449,7 @@ export async function fetchAllMarketData(
             if (cachedEntry) {
                 return cachedEntry.data;
             }
-            const mock = createMockData(symbol);
-            cacheState.entries.set(symbol, { data: mock, timestamp: Date.now() });
-            return mock;
+            return null;
         })
         .filter((data): data is MarketData => Boolean(data));
 
@@ -373,14 +460,26 @@ async function ensureRefreshed(symbols: string[], force = false) {
     const uniqueSymbols = Array.from(new Set(symbols)).filter((symbol) => MARKET_UNIVERSE[symbol]);
     if (uniqueSymbols.length === 0) return;
 
+    if (
+        force
+        && cacheState.entries.size > 0
+        && cacheState.lastRefresh > 0
+        && (Date.now() - cacheState.lastRefresh) < FORCE_REFRESH_MIN_INTERVAL_MS
+    ) {
+        return;
+    }
+
     if (cacheState.refreshing) {
-        if (force) {
-            await cacheState.refreshing;
-        } else {
-            const waitResult = await waitWithTimeout(cacheState.refreshing, MAX_REFRESH_WAIT_MS);
-            if (waitResult === 'timeout') {
-                return;
+        const waitResult = await waitWithTimeout(
+            cacheState.refreshing,
+            force ? FORCE_REFRESH_WAIT_MS : MAX_REFRESH_WAIT_MS,
+        );
+        if (waitResult === 'timeout') {
+            // If we have no data at all yet, give TwelveData a little more time to populate at least one entry.
+            if (cacheState.entries.size === 0) {
+                await waitForFirstCacheEntry(EMPTY_CACHE_WAIT_MS);
             }
+            return;
         }
         const now = Date.now();
         const stillStale = uniqueSymbols.some((symbol) => {
@@ -403,10 +502,14 @@ async function ensureRefreshed(symbols: string[], force = false) {
         console.error('[market] Refresh failed', error);
     });
 
-    if (force) {
-        await cacheState.refreshing;
-    } else {
-        await waitWithTimeout(cacheState.refreshing, MAX_REFRESH_WAIT_MS);
+    await waitWithTimeout(
+        cacheState.refreshing,
+        force ? FORCE_REFRESH_WAIT_MS : MAX_REFRESH_WAIT_MS,
+    );
+
+    // Cold-start: even if we stop waiting on the full refresh, try to return at least some data.
+    if (cacheState.entries.size === 0) {
+        await waitForFirstCacheEntry(EMPTY_CACHE_WAIT_MS);
     }
 }
 
@@ -414,30 +517,92 @@ async function refreshUniverse(symbols: string[]) {
     const uniqueSymbols = Array.from(new Set(symbols)).filter((symbol) => MARKET_UNIVERSE[symbol]);
     if (uniqueSymbols.length === 0) return;
 
+    const candleSymbols = HAS_TWELVE_DATA ? selectCandleSymbols(uniqueSymbols) : uniqueSymbols;
     const indicatorMap = await fetchIndicatorBundle(uniqueSymbols);
-    const batches = chunk(uniqueSymbols, BATCH_SIZE);
 
-    for (let i = 0; i < batches.length; i += 1) {
-        const batch = batches[i];
-        const metaList = batch.map((symbol) => MARKET_UNIVERSE[symbol]);
+    if (HAS_TWELVE_DATA) {
+        const tasks = candleSymbols.map(async (symbol) => {
+            const meta = MARKET_UNIVERSE[symbol];
+            if (!meta) return;
 
-        const ohlcResults = await Promise.all(metaList.map((meta) => fetchFinnhubOHLC(meta)));
+            const twelveSymbol = meta.twelveDataSymbol;
 
-        ohlcResults.forEach((result, idx) => {
-            const meta = metaList[idx];
-            if (!result || result.length === 0) {
-                console.warn(`[market] Missing OHLC data for ${meta.symbol}, using fallback`);
-                const mock = createMockData(meta.symbol);
-                cacheState.entries.set(meta.symbol, { data: mock, timestamp: Date.now() });
+            try {
+                const raw = await fetchTimeSeriesSeries([twelveSymbol]);
+                const ohlc = extractTimeSeriesOHLC(raw, twelveSymbol);
+
+                if (!ohlc || ohlc.length === 0) {
+                    const existing = cacheState.entries.get(meta.symbol);
+                    if (existing) {
+                        return;
+                    }
+                    console.warn('[market] TwelveData returned empty OHLC', { symbol: meta.symbol, twelveSymbol });
+                    return;
+                }
+
+                const currentPrice = ohlc[ohlc.length - 1]?.close ?? 0;
+                const indicators = indicatorMap[meta.symbol] ?? emptyIndicators();
+
+                const marketData: MarketData = {
+                    symbol: meta.symbol,
+                    ohlc,
+                    currentPrice,
+                    indicators,
+                    lastUpdated: new Date().toISOString(),
+                    meta,
+                };
+
+                cacheState.entries.set(meta.symbol, { data: marketData, timestamp: Date.now() });
+            } catch (error) {
+                if (isRateLimitError(error)) {
+                    return;
+                }
+
+                if (isPermanentSymbolError(error)) {
+                    if (!cacheState.unsupportedCandleSymbols.has(symbol)) {
+                        cacheState.unsupportedCandleSymbols.add(symbol);
+                        console.warn('[market] TwelveData time_series unsupported symbol', {
+                            symbol,
+                            twelveSymbol,
+                            message: error instanceof Error ? error.message : String(error),
+                        });
+                    }
+                    return;
+                }
+
+                console.warn('[market] TwelveData time_series failed', {
+                    symbol,
+                    twelveSymbol,
+                    message: error instanceof Error ? error.message : String(error),
+                });
+            }
+        });
+
+        await Promise.allSettled(tasks);
+    } else {
+        const ohlcMap = await fetchFinnhubBundle(candleSymbols);
+
+        candleSymbols.forEach((symbol) => {
+            const meta = MARKET_UNIVERSE[symbol];
+            const ohlc = ohlcMap[symbol];
+
+            if (!ohlc || ohlc.length === 0) {
+                const existing = cacheState.entries.get(meta.symbol);
+                if (existing) {
+                    console.warn(`[market] Missing OHLC data for ${meta.symbol}, keeping cached data`);
+                    return;
+                }
+
+                console.warn(`[market] Missing OHLC data for ${meta.symbol}`);
                 return;
             }
 
-            const currentPrice = result[result.length - 1]?.close ?? result[result.length - 1]?.close ?? 0;
+            const currentPrice = ohlc[ohlc.length - 1]?.close ?? 0;
             const indicators = indicatorMap[meta.symbol] ?? emptyIndicators();
 
             const marketData: MarketData = {
                 symbol: meta.symbol,
-                ohlc: result,
+                ohlc,
                 currentPrice,
                 indicators,
                 lastUpdated: new Date().toISOString(),
@@ -446,10 +611,6 @@ async function refreshUniverse(symbols: string[]) {
 
             cacheState.entries.set(meta.symbol, { data: marketData, timestamp: Date.now() });
         });
-
-        if (i < batches.length - 1) {
-            await delay(BATCH_DELAY_MS);
-        }
     }
 
     cacheState.lastRefresh = Date.now();
@@ -457,10 +618,40 @@ async function refreshUniverse(symbols: string[]) {
 
 type InstrumentMeta = (typeof MARKET_UNIVERSE)[keyof typeof MARKET_UNIVERSE];
 
+async function fetchFinnhubBundle(symbols: string[]): Promise<Record<string, OHLC[] | null>> {
+    const results: Record<string, OHLC[] | null> = {};
+    const uniqueSymbols = Array.from(new Set(symbols)).filter((symbol) => MARKET_UNIVERSE[symbol]);
+    uniqueSymbols.forEach((symbol) => {
+        results[symbol] = null;
+    });
+
+    if (!HAS_FINNHUB || uniqueSymbols.length === 0) {
+        return results;
+    }
+
+    const batches = chunk(uniqueSymbols, BATCH_SIZE);
+    for (let i = 0; i < batches.length; i += 1) {
+        const batch = batches[i];
+        const metaList = batch.map((symbol) => MARKET_UNIVERSE[symbol]);
+        const ohlcResults = await Promise.all(metaList.map((meta) => fetchFinnhubOHLC(meta)));
+
+        ohlcResults.forEach((ohlc, idx) => {
+            const meta = metaList[idx];
+            results[meta.symbol] = ohlc;
+        });
+
+        if (i < batches.length - 1) {
+            await delay(BATCH_DELAY_MS);
+        }
+    }
+
+    return results;
+}
+
 async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
     if (!FINNHUB_API_KEY) {
-        console.warn('[market] Missing FINNHUB_API_KEY – using mock OHLC data');
-        return createMockData(meta.symbol).ohlc;
+        console.warn('[market] Missing FINNHUB_API_KEY');
+        return null;
     }
 
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -475,19 +666,56 @@ async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
 
     const runRequest = async () => {
         const response = await fetch(url.toString());
-        const data = await response.json();
-
-        if (data.s !== 'ok' || !Array.isArray(data.t)) {
-            console.warn(`[market] Finnhub returned no data for ${meta.symbol}:`, data.s);
+        let data: unknown;
+        try {
+            data = await response.json();
+        } catch (error) {
+            console.warn(`[market] Finnhub non-JSON response for ${meta.symbol} (HTTP ${response.status})`, error);
             return null;
         }
 
-        const candles: OHLC[] = data.t.map((timestamp: number, idx: number) => ({
-            time: new Date(timestamp * 1000).toISOString().split('T')[0],
-            open: Number(data.o[idx]),
-            high: Number(data.h[idx]),
-            low: Number(data.l[idx]),
-            close: Number(data.c[idx]),
+        const payload = (typeof data === 'object' && data !== null)
+            ? (data as Record<string, unknown>)
+            : null;
+
+        if (!response.ok) {
+            console.warn(`[market] Finnhub HTTP ${response.status} for ${meta.symbol}`, data);
+            return null;
+        }
+
+        const s = payload?.s;
+        const t = payload?.t;
+
+        if (s !== 'ok' || !Array.isArray(t)) {
+            // Finnhub returns an error payload without `s` in some cases (e.g. invalid token / no access).
+            console.warn(`[market] Finnhub returned no candle data for ${meta.symbol}`, {
+                s,
+                error: payload?.error,
+                message: payload?.message,
+                raw: data,
+            });
+            return null;
+        }
+
+        const o = payload?.o;
+        const h = payload?.h;
+        const l = payload?.l;
+        const c = payload?.c;
+
+        if (!Array.isArray(o) || !Array.isArray(h) || !Array.isArray(l) || !Array.isArray(c)) {
+            console.warn(`[market] Finnhub candle payload missing OHLC arrays for ${meta.symbol}`, {
+                s,
+                raw: data,
+            });
+            return null;
+        }
+
+        const candles: OHLC[] = (t as unknown[]).map((timestamp, idx) => ({
+            time: new Date(Number(timestamp) * 1000).toISOString().split('T')[0],
+            open: Number(o[idx]),
+            high: Number(h[idx]),
+            low: Number(l[idx]),
+            close: Number(c[idx]),
         }));
 
         return candles.slice(-HISTORY_DAYS);
@@ -508,6 +736,13 @@ async function fetchIndicatorBundle(symbols: string[]): Promise<Record<string, I
     const results: Record<string, IndicatorSnapshot> = {};
 
     const uniqueSymbols = Array.from(new Set(symbols));
+    if (!INDICATORS_ENABLED) {
+        uniqueSymbols.forEach((symbol) => {
+            results[symbol] = emptyIndicators();
+        });
+        return results;
+    }
+
     if (!HAS_TWELVE_DATA || uniqueSymbols.length === 0) {
         uniqueSymbols.forEach((symbol) => {
             results[symbol] = emptyIndicators();
@@ -633,6 +868,74 @@ async function fetchIndicatorSeries(type: IndicatorType, symbols: string[]): Pro
     }
 
     return runRequest();
+}
+
+async function fetchTimeSeriesSeries(symbols: string[]): Promise<TimeSeriesResponse> {
+    if (symbols.length === 0) {
+        return {};
+    }
+
+    const url = new URL(`${TWELVE_DATA_BASE}/time_series`);
+    url.searchParams.set('symbol', symbols.join(','));
+    url.searchParams.set('interval', '1day');
+    url.searchParams.set('outputsize', String(Math.max(HISTORY_DAYS + 10, 120)));
+    url.searchParams.set('apikey', TWELVE_DATA_API_KEY);
+
+    const runRequest = async () => {
+        const response = await fetch(url.toString());
+        if (!response.ok) {
+            throw new Error(`Time series HTTP ${response.status}`);
+        }
+        const data = await response.json();
+
+        if (data?.code === 429 || data?.status === 'error') {
+            throw new Error(data?.message || 'Time series error');
+        }
+
+        if (symbols.length === 1 && !data[symbols[0]]) {
+            return { [symbols[0]]: data } as TimeSeriesResponse;
+        }
+
+        return data as TimeSeriesResponse;
+    };
+
+    if (twelveDataLimiter) {
+        return twelveDataLimiter.schedule(runRequest);
+    }
+
+    return runRequest();
+}
+
+function extractTimeSeriesOHLC(source: TimeSeriesResponse, symbol: string): OHLC[] | null {
+    const payload = source?.[symbol];
+    if (!payload || payload.status === 'error') {
+        return null;
+    }
+
+    const values = Array.isArray(payload.values) ? payload.values : null;
+    if (!values || values.length === 0) {
+        return null;
+    }
+
+    const candles: OHLC[] = values
+        .map((value) => {
+            const datetimeRaw = value.datetime ?? value.date ?? value.time;
+            if (!datetimeRaw) return null;
+            const date = String(datetimeRaw).slice(0, 10);
+            const open = Number(value.open);
+            const high = Number(value.high);
+            const low = Number(value.low);
+            const close = Number(value.close);
+            if (!Number.isFinite(open) || !Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close)) {
+                return null;
+            }
+            return { time: date, open, high, low, close };
+        })
+        .filter((candle): candle is OHLC => Boolean(candle))
+        // TwelveData returns newest-first; convert to chronological.
+        .reverse();
+
+    return candles.slice(-HISTORY_DAYS);
 }
 
 function extractSingleValue(source: IndicatorResponse, symbol: string, key: 'rsi' | 'sma'): number | null {

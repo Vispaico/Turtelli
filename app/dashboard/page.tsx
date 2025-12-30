@@ -1,7 +1,6 @@
 "use client";
 
-import React, { useCallback, useMemo, useState } from 'react';
-import useSWR from 'swr';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import Layout from '@/components/Layout';
 import SignalTable from '@/components/SignalTable';
@@ -17,21 +16,58 @@ type SignalsResponse = {
     skipped: string[];
 };
 
-const fetcher = (url: string): Promise<SignalsResponse> => fetch(url, { cache: 'no-store' }).then(async (res) => {
+const fetcher = async (url: string): Promise<SignalsResponse> => {
+    const res = await fetch(url, { cache: 'no-store' });
     if (!res.ok) {
-        const msg = await res.text();
-        throw new Error(msg || 'Failed to fetch');
+        const raw = await res.text();
+        let msg = raw;
+        try {
+            const parsed = JSON.parse(raw) as { error?: string; message?: string };
+            msg = parsed.error ?? parsed.message ?? raw;
+        } catch {
+            // noop
+        }
+        throw new Error(msg || `Failed to fetch (HTTP ${res.status})`);
     }
     return res.json();
-});
+};
 
 export default function Dashboard() {
     const [activeTab, setActiveTab] = useState<'main' | 'small'>('main');
-    const { data, error, isLoading, mutate, isValidating } = useSWR<SignalsResponse>('/api/signals', fetcher, {
-        dedupingInterval: 60 * 60 * 1000,
-        revalidateOnFocus: false,
-        revalidateOnReconnect: false,
-    });
+    const [data, setData] = useState<SignalsResponse | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [isRefreshing, setIsRefreshing] = useState(false);
+
+    const loadSignals = useCallback(async (force = false) => {
+        setIsRefreshing(true);
+        setError(null);
+        try {
+            const next = await fetcher(`/api/signals?${force ? 'force=1&' : ''}t=${Date.now()}`);
+            setData(next);
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to fetch signals');
+        } finally {
+            setIsRefreshing(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        void loadSignals(false);
+    }, [loadSignals]);
+
+    // Cold start: if the API returns 0 markets (while the server is still warming/populating cache), retry automatically.
+    useEffect(() => {
+        if (!data) return;
+        if (error) return;
+        if (isRefreshing) return;
+        if ((data.markets?.length ?? 0) > 0) return;
+
+        const timer = setTimeout(() => {
+            void loadSignals(false);
+        }, 2500);
+
+        return () => clearTimeout(timer);
+    }, [data, error, isRefreshing, loadSignals]);
 
     const signals: Signal[] = useMemo(() => data?.signals ?? [], [data?.signals]);
     const markets: MarketData[] = useMemo(() => data?.markets ?? [], [data?.markets]);
@@ -65,12 +101,9 @@ export default function Dashboard() {
 
     const currentPortfolio = activeTab === 'main' ? mainPortfolio : smallPortfolio;
 
-    const handleRefresh = useCallback(async () => {
-        await mutate(fetcher(`/api/signals?force=1&t=${Date.now()}`), {
-            revalidate: false,
-            rollbackOnError: true,
-        });
-    }, [mutate]);
+    const handleRefresh = useCallback(() => {
+        void loadSignals(true);
+    }, [loadSignals]);
 
     return (
         <Layout>
@@ -78,14 +111,15 @@ export default function Dashboard() {
                 <h1 className="text-3xl font-bold">Trader Dashboard</h1>
                 <div className="flex items-center gap-2 text-sm opacity-60">
                     {data?.timestamp && <span>Last updated {new Date(data.timestamp).toLocaleTimeString()}</span>}
-                    {error && <span className="text-accent-red">{error.message}</span>}
+                    {data && <span>({data.signals.length} signals / {data.markets.length} markets)</span>}
+                    {error && <span className="text-accent-red">{error}</span>}
                 </div>
                 <button
                     onClick={handleRefresh}
-                    disabled={isLoading || isValidating}
+                    disabled={isRefreshing}
                     className="flex items-center gap-2 px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg transition-colors disabled:opacity-50"
                 >
-                    <RefreshCw className={`w-4 h-4 ${isLoading || isValidating ? 'animate-spin' : ''}`} />
+                    <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
                     Refresh Signals
                 </button>
             </div>
@@ -146,7 +180,7 @@ export default function Dashboard() {
                 {/* Right Column: Signals */}
                 <div className="lg:col-span-1">
                     <SignalTable signals={signals} />
-                    {(isLoading || isValidating) && (
+                    {isRefreshing && (
                         <p className="text-center text-sm opacity-60 mt-4">Refreshing signals...</p>
                     )}
                     {!!(data?.skipped?.length) && (

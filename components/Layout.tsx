@@ -41,7 +41,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
     return (
         <div className="min-h-screen flex flex-col">
-            <header className="glass-card sticky top-0 z-50 m-4 px-6 py-4 flex justify-between items-center">
+            <header className="glass-card navbar sticky top-0 z-50 m-4 px-6 py-4 flex justify-between items-center">
                 <Link href="/" className="flex items-center gap-2 hover:opacity-80 transition-opacity">
                     <Turtle className="w-8 h-8 text-accent-green" />
                     <span className="text-2xl font-bold tracking-tight">Turtelli</span>
@@ -50,6 +50,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <nav className="flex items-center gap-6">
                     <Link href="/dashboard" className="font-medium hover:text-accent-green transition-colors">
                         Dashboard
+                    </Link>
+                    <Link href="/articles" className="font-medium hover:text-accent-green transition-colors">
+                        Articles
                     </Link>
                     <button
                         onClick={toggleTheme}

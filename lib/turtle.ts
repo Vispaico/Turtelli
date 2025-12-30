@@ -42,7 +42,9 @@ export function generateSignal(marketData: MarketData): Signal {
     const { symbol, ohlc, currentPrice } = marketData;
     const len = ohlc.length;
 
-    if (len < SYSTEM_2_ENTRY) {
+    // We compare today's price vs the *previous* N-day high/low (exclude the latest candle).
+    // That requires at least N + 1 candles.
+    if (len < (SYSTEM_2_ENTRY + 1)) {
         return {
             symbol,
             action: 'HOLD',
@@ -58,19 +60,19 @@ export function generateSignal(marketData: MarketData): Signal {
     // Actually, Turtle checks if TODAY's price breaks the high of the LAST N days.
     // We use the latest available data point as "today" or "current".
 
-    // Get highs/lows of previous N days (excluding current if it's forming, but for simplicity we use closed candles + current price)
-    // Let's assume ohlc includes up to yesterday, and currentPrice is live.
+    // Get highs/lows of the previous N candles excluding the latest candle (treated as "today").
+    const endIdx = Math.max(0, len - 1);
 
-    const prev20 = ohlc.slice(len - SYSTEM_1_ENTRY, len);
+    const prev20 = ohlc.slice(Math.max(0, endIdx - SYSTEM_1_ENTRY), endIdx);
     const high20 = Math.max(...prev20.map(c => c.high));
     const low20 = Math.min(...prev20.map(c => c.low));
 
-    const prev55 = ohlc.slice(len - SYSTEM_2_ENTRY, len);
+    const prev55 = ohlc.slice(Math.max(0, endIdx - SYSTEM_2_ENTRY), endIdx);
     const high55 = Math.max(...prev55.map(c => c.high));
     const low55 = Math.min(...prev55.map(c => c.low));
 
     let action: Action = 'HOLD';
-    let reason = '';
+    let reason = 'No breakout';
     let stopLoss = 0;
     let targetPrice = 0;
 
@@ -113,7 +115,8 @@ export function generateSignal(marketData: MarketData): Signal {
     return {
         symbol,
         action,
-        entryPrice: action !== 'HOLD' ? currentPrice : 0,
+        // Always include the latest price so the UI can show a meaningful value even for HOLD.
+        entryPrice: Number.isFinite(currentPrice) ? currentPrice : 0,
         stopLoss,
         targetPrice,
         timestamp: new Date().toISOString(),
