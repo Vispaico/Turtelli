@@ -57,8 +57,8 @@ export default function AdSlot({
 
   return (
     <div className={className}>
-      <div className="glass-card p-3">
-        {label ? <div className="text-xs opacity-60 mb-2">{label}</div> : null}
+      <div className="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-3 shadow-sm">
+        {label ? <div className="text-xs text-slate-500 dark:text-slate-400 mb-2">{label}</div> : null}
         <iframe
           title="Advertisement"
           sandbox="allow-scripts allow-same-origin"
