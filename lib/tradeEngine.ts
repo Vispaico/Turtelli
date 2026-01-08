@@ -1,6 +1,6 @@
 import { fetchAllMarketData, getCachedMarketData, refreshLiveQuotes } from './api';
 import { generateSignal } from './turtle';
-import { ALL_SYMBOLS, MarketData, Signal, TrackedTrade } from './types';
+import { ALL_SYMBOLS, MarketData, Signal, TrackedTrade, MARKET_UNIVERSE } from './types';
 
 type Snapshot = {
     timestamp: string;
@@ -205,17 +205,46 @@ async function refreshActiveTrades() {
         return;
     }
 
-    await refreshLiveQuotes(openSymbols);
+    const quotes = await refreshLiveQuotes(openSymbols);
 
     const updatedMarkets = openSymbols
-        .map((symbol) => getCachedMarketData(symbol))
+        .map((symbol) => {
+            const cached = getCachedMarketData(symbol);
+            const trade = state.openTrades.get(symbol);
+            const price = quotes[symbol] ?? cached?.currentPrice ?? trade?.lastPrice;
+            if (!price || !Number.isFinite(price)) return cached;
+
+            if (cached) {
+                return {
+                    ...cached,
+                    currentPrice: price,
+                    lastUpdated: new Date().toISOString(),
+                };
+            }
+
+            return {
+                symbol,
+                ohlc: [],
+                currentPrice: price,
+                indicators: undefined,
+                lastUpdated: new Date().toISOString(),
+                meta: MARKET_UNIVERSE[symbol],
+            } as MarketData;
+        })
         .filter((item): item is MarketData => Boolean(item));
 
-    if (updatedMarkets.length === 0) {
-        return;
-    }
+    // Update trade lastPrice with freshest quote
+    openSymbols.forEach((symbol) => {
+        const trade = state.openTrades.get(symbol);
+        const price = quotes[symbol];
+        if (trade && Number.isFinite(price)) {
+            trade.lastPrice = price as number;
+        }
+    });
 
-    evaluateExits(updatedMarkets);
+    if (updatedMarkets.length) {
+        evaluateExits(updatedMarkets);
+    }
 
     const stateSnapshot = state.snapshot;
     if (stateSnapshot) {
@@ -279,23 +308,7 @@ export async function getSignalSnapshot(options: { force?: boolean } = {}): Prom
     }
 
     if (state.openTrades.size > 0) {
-        const openSymbols = Array.from(state.openTrades.keys());
-
-        // Always fetch fresh quotes for open trades per request so UI shows current P&L.
-        await refreshLiveQuotes(openSymbols);
-
-        // If fast timer is stale, also run exit evaluation.
-        if (now - state.lastFast >= FAST_POLL_MS) {
-            await withLock(refreshActiveTrades);
-        } else {
-            // Even without full refresh, update exits if quotes moved enough.
-            const updatedMarkets = openSymbols
-                .map((symbol) => getCachedMarketData(symbol))
-                .filter((item): item is MarketData => Boolean(item));
-            if (updatedMarkets.length) {
-                evaluateExits(updatedMarkets);
-            }
-        }
+        await withLock(refreshActiveTrades);
     }
 
     return state.snapshot ?? {
