@@ -35,6 +35,25 @@ export interface MarketData {
   meta?: InstrumentMeta;
 }
 
+export type TradeStatus = 'OPEN' | 'CLOSED';
+
+export interface TrackedTrade {
+  id: string;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  entryTime: string;
+  stopLoss: number;
+  targetPrice: number;
+  status: TradeStatus;
+  exitPrice?: number;
+  exitTime?: string;
+  exitReason?: 'STOP' | 'TARGET' | 'MANUAL';
+  pnl?: number;
+  pnlPercent?: number;
+  lastPrice?: number;
+}
+
 export type Action = 'BUY' | 'SELL' | 'HOLD';
 
 export interface Signal {

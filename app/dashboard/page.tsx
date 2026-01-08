@@ -6,7 +6,8 @@ import Layout from '@/components/Layout';
 import SignalTable from '@/components/SignalTable';
 import PortfolioChart from '@/components/PortfolioChart';
 import TradeTable from '@/components/TradeTable';
-import { Signal, MarketData, Portfolio } from '@/lib/types';
+import ExitTable from '@/components/ExitTable';
+import { Signal, MarketData, Portfolio, TrackedTrade } from '@/lib/types';
 import { simulatePortfolio } from '@/lib/portfolio';
 
 type SignalsResponse = {
@@ -14,6 +15,8 @@ type SignalsResponse = {
     markets: MarketData[];
     signals: Signal[];
     skipped: string[];
+    openTrades: TrackedTrade[];
+    closedTrades: TrackedTrade[];
 };
 
 const fetcher = async (url: string): Promise<SignalsResponse> => {
@@ -71,6 +74,13 @@ export default function Dashboard() {
 
     const signals: Signal[] = useMemo(() => data?.signals ?? [], [data?.signals]);
     const markets: MarketData[] = useMemo(() => data?.markets ?? [], [data?.markets]);
+    const openTrades: TrackedTrade[] = useMemo(() => data?.openTrades ?? [], [data?.openTrades]);
+    const closedTrades: TrackedTrade[] = useMemo(() => data?.closedTrades ?? [], [data?.closedTrades]);
+
+    const tradesForSimulation = useMemo(
+        () => [...openTrades, ...closedTrades],
+        [openTrades, closedTrades],
+    );
 
     const marketMap = useMemo(() => (
         markets.reduce((acc, item) => {
@@ -86,8 +96,10 @@ export default function Dashboard() {
             capital: 10_000,
             signals,
             marketMap,
+            trades: tradesForSimulation,
+            closedTrades,
         })
-    ), [signals, marketMap]);
+    ), [signals, marketMap, tradesForSimulation, closedTrades]);
 
     const smallPortfolio = useMemo<Portfolio>(() => (
         simulatePortfolio({
@@ -96,8 +108,10 @@ export default function Dashboard() {
             capital: 800,
             signals,
             marketMap,
+            trades: tradesForSimulation,
+            closedTrades,
         })
-    ), [signals, marketMap]);
+    ), [signals, marketMap, tradesForSimulation, closedTrades]);
 
     const currentPortfolio = activeTab === 'main' ? mainPortfolio : smallPortfolio;
 
@@ -111,7 +125,7 @@ export default function Dashboard() {
                 <h1 className="text-3xl font-bold">Trader Dashboard</h1>
                 <div className="flex items-center gap-2 text-sm opacity-60">
                     {data?.timestamp && <span>Last updated {new Date(data.timestamp).toLocaleTimeString()}</span>}
-                    {data && <span>({data.signals.length} signals / {data.markets.length} markets)</span>}
+                    {data && <span>({data.signals.length} signals / {data.markets.length} markets / {openTrades.length} open deals)</span>}
                     {error && <span className="text-accent-red">{error}</span>}
                 </div>
                 <button
@@ -174,6 +188,14 @@ export default function Dashboard() {
                             <span className="text-xs opacity-60">IG Costs Paid: ${currentPortfolio.totalIgCost.toFixed(2)}</span>
                         </div>
                         <TradeTable positions={currentPortfolio.positions} />
+                    </div>
+
+                    <div className="glass-card p-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="font-bold text-lg">Recent Exits</h3>
+                            <span className="text-xs opacity-60">{closedTrades.length} closed deals</span>
+                        </div>
+                        <ExitTable trades={closedTrades} />
                     </div>
                 </div>
 

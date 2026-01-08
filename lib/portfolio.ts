@@ -1,4 +1,4 @@
-import { MarketData, Portfolio, PortfolioHistoryPoint, PortfolioPosition, Signal, MARKET_UNIVERSE } from './types';
+import { MarketData, Portfolio, PortfolioHistoryPoint, PortfolioPosition, Signal, TrackedTrade, MARKET_UNIVERSE } from './types';
 
 const IG_COSTS = {
     INDICES_SPREAD: 1.5,
@@ -10,9 +10,11 @@ interface SimulationParams {
     id: string;
     name: string;
     capital: number;
-    signals: Signal[];
+    signals?: Signal[];
     marketMap: Record<string, MarketData>;
     riskPercent?: number;
+    trades?: TrackedTrade[];
+    closedTrades?: TrackedTrade[];
 }
 
 export function calculateCost(symbol: string, quantity: number, price: number): number {
@@ -42,7 +44,11 @@ export function createInitialPortfolio(id: string, name: string, capital: number
 }
 
 export function simulatePortfolio(params: SimulationParams): Portfolio {
-    const { id, name, capital, signals, marketMap, riskPercent = 0.01 } = params;
+    if (params.trades && params.trades.length) {
+        return simulateFromTrades(params);
+    }
+
+    const { id, name, capital, signals = [], marketMap, riskPercent = 0.01 } = params;
     const positions: PortfolioPosition[] = [];
     let totalPnl = 0;
     let totalIgCost = 0;
@@ -102,6 +108,102 @@ export function simulatePortfolio(params: SimulationParams): Portfolio {
         totalPnl,
         totalPnlPercent,
         tradeCount: positions.length,
+        totalIgCost,
+        history: history.length ? history : [{ date: new Date().toISOString(), value: currentBalance }],
+    };
+}
+
+function simulateFromTrades(params: SimulationParams): Portfolio {
+    const { id, name, capital, marketMap, riskPercent = 0.01 } = params;
+    const trades = params.trades ?? [];
+    const closedTrades = params.closedTrades ?? trades.filter((trade) => trade.status === 'CLOSED');
+    const openTrades = trades.filter((trade) => trade.status === 'OPEN');
+
+    let totalPnl = 0;
+    let totalIgCost = 0;
+    let realizedPnl = 0;
+    const positions: PortfolioPosition[] = [];
+
+    const makePosition = (trade: TrackedTrade, currentPrice: number | null): PortfolioPosition | null => {
+        if (!Number.isFinite(trade.entryPrice) || !Number.isFinite(trade.stopLoss)) return null;
+
+        const stopDistance = Math.abs(trade.entryPrice - trade.stopLoss);
+        if (stopDistance <= 0) return null;
+
+        const riskAmount = capital * riskPercent;
+        const quantity = Math.max(1, Math.floor(riskAmount / stopDistance));
+        if (!Number.isFinite(quantity) || quantity <= 0) return null;
+
+        const side = trade.side;
+        const priceNow = currentPrice ?? trade.entryPrice;
+
+        const igCost = calculateCost(trade.symbol, quantity, trade.entryPrice);
+        const grossPnl = side === 'LONG'
+            ? (priceNow - trade.entryPrice) * quantity
+            : (trade.entryPrice - priceNow) * quantity;
+        const pnl = grossPnl - igCost;
+        const pnlPercent = (pnl / (trade.entryPrice * quantity)) * 100;
+
+        totalIgCost += igCost;
+        return {
+            symbol: trade.symbol,
+            quantity,
+            entryPrice: trade.entryPrice,
+            currentPrice: priceNow,
+            pnl,
+            pnlPercent,
+            cost: trade.entryPrice * quantity,
+            side,
+            action: side === 'SHORT' ? 'SELL' : 'BUY',
+            igCost,
+        };
+    };
+
+    openTrades.forEach((trade) => {
+        const market = marketMap[trade.symbol];
+        const priceNow = market?.currentPrice ?? trade.lastPrice ?? trade.entryPrice;
+        const position = makePosition(trade, priceNow);
+        if (!position) return;
+
+        positions.push(position);
+        totalPnl += position.pnl;
+    });
+
+    closedTrades.forEach((trade) => {
+        if (!Number.isFinite(trade.entryPrice) || !Number.isFinite(trade.stopLoss)) return;
+        const stopDistance = Math.abs(trade.entryPrice - trade.stopLoss);
+        if (stopDistance <= 0) return;
+
+        const riskAmount = capital * riskPercent;
+        const quantity = Math.max(1, Math.floor(riskAmount / stopDistance));
+        if (!Number.isFinite(quantity) || quantity <= 0) return;
+
+        const igCost = calculateCost(trade.symbol, quantity, trade.entryPrice);
+        const exitPrice = trade.exitPrice ?? trade.lastPrice ?? trade.entryPrice;
+        const grossPnl = trade.side === 'LONG'
+            ? (exitPrice - trade.entryPrice) * quantity
+            : (trade.entryPrice - exitPrice) * quantity;
+        const pnl = grossPnl - igCost;
+
+        realizedPnl += pnl;
+        totalIgCost += igCost;
+    });
+
+    totalPnl += realizedPnl;
+
+    const history = buildPortfolioHistory(capital + realizedPnl, positions, marketMap);
+    const currentBalance = history.length > 0 ? history[history.length - 1].value : capital + totalPnl;
+    const totalPnlPercent = ((currentBalance - capital) / capital) * 100;
+
+    return {
+        id,
+        name,
+        initialCapital: capital,
+        currentBalance,
+        positions,
+        totalPnl,
+        totalPnlPercent,
+        tradeCount: positions.length + closedTrades.length,
         totalIgCost,
         history: history.length ? history : [{ date: new Date().toISOString(), value: currentBalance }],
     };

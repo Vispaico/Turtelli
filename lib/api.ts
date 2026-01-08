@@ -732,6 +732,52 @@ async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
     }
 }
 
+async function fetchFinnhubQuote(meta: InstrumentMeta): Promise<number | null> {
+    if (!FINNHUB_API_KEY) {
+        console.warn('[market] Missing FINNHUB_API_KEY');
+        return null;
+    }
+
+    const url = new URL(`${FINNHUB_BASE}/quote`);
+    url.searchParams.set('symbol', meta.finnhubSymbol);
+    url.searchParams.set('token', FINNHUB_API_KEY);
+
+    const runRequest = async () => {
+        const response = await fetch(url.toString());
+        if (!response.ok) {
+            console.warn(`[market] Finnhub quote HTTP ${response.status} for ${meta.symbol}`);
+            return null;
+        }
+
+        let payload: unknown;
+        try {
+            payload = await response.json();
+        } catch (error) {
+            console.warn(`[market] Finnhub quote non-JSON for ${meta.symbol}`, error);
+            return null;
+        }
+
+        const priceRaw = (payload as Record<string, unknown>)?.c;
+        const price = Number(priceRaw);
+        if (!Number.isFinite(price)) {
+            console.warn(`[market] Finnhub quote missing price for ${meta.symbol}`, payload);
+            return null;
+        }
+
+        return price;
+    };
+
+    try {
+        if (finnhubLimiter) {
+            return await finnhubLimiter.schedule(runRequest);
+        }
+        return await runRequest();
+    } catch (error) {
+        console.warn(`[market] Finnhub quote failed for ${meta.symbol}`, error);
+        return null;
+    }
+}
+
 async function fetchIndicatorBundle(symbols: string[]): Promise<Record<string, IndicatorSnapshot>> {
     const results: Record<string, IndicatorSnapshot> = {};
 
@@ -980,4 +1026,37 @@ function extractMacdValues(source: IndicatorResponse, symbol: string) {
         signal: Number.isFinite(signal) ? signal : null,
         histogram: Number.isFinite(histogram) ? histogram : null,
     };
+}
+
+export async function refreshLiveQuotes(symbols: string[]): Promise<Record<string, number | null>> {
+    const results: Record<string, number | null> = {};
+    const uniqueSymbols = Array.from(new Set(symbols)).filter((symbol) => MARKET_UNIVERSE[symbol]);
+
+    if (!HAS_FINNHUB || uniqueSymbols.length === 0) {
+        uniqueSymbols.forEach((symbol) => { results[symbol] = null; });
+        return results;
+    }
+
+    const tasks = uniqueSymbols.map(async (symbol) => {
+        const meta = MARKET_UNIVERSE[symbol];
+        const price = await fetchFinnhubQuote(meta);
+        if (price !== null) {
+            const existing = cacheState.entries.get(symbol);
+            if (existing) {
+                existing.data.currentPrice = price;
+                existing.data.lastUpdated = new Date().toISOString();
+                existing.timestamp = Date.now();
+                cacheState.entries.set(symbol, existing);
+            }
+        }
+        results[symbol] = price;
+    });
+
+    await Promise.allSettled(tasks);
+    return results;
+}
+
+export function getCachedMarketData(symbol: string): MarketData | null {
+    const entry = cacheState.entries.get(symbol);
+    return entry ? entry.data : null;
 }
