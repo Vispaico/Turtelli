@@ -519,7 +519,12 @@ async function refreshUniverse(symbols: string[]) {
 
     const indicatorMap = await fetchIndicatorBundle(uniqueSymbols);
 
-    const twelveSymbols = HAS_TWELVE_DATA ? selectCandleSymbols(uniqueSymbols) : [];
+    // Prefer Finnhub for indices/ETF proxies to avoid TwelveData free-tier gaps on index data.
+    const preferFinnhub = uniqueSymbols.filter((symbol) => MARKET_UNIVERSE[symbol]?.type === 'index');
+
+    const twelveSymbols = HAS_TWELVE_DATA
+        ? selectCandleSymbols(uniqueSymbols.filter((s) => !preferFinnhub.includes(s)))
+        : [];
     const twelveSet = new Set(twelveSymbols);
     const finnhubSymbols = uniqueSymbols.filter((symbol) => !twelveSet.has(symbol));
     const twelveFailures: string[] = [];
