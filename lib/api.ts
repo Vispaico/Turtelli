@@ -522,6 +522,7 @@ async function refreshUniverse(symbols: string[]) {
     const twelveSymbols = HAS_TWELVE_DATA ? selectCandleSymbols(uniqueSymbols) : [];
     const twelveSet = new Set(twelveSymbols);
     const finnhubSymbols = uniqueSymbols.filter((symbol) => !twelveSet.has(symbol));
+    const twelveFailures: string[] = [];
 
     if (twelveSymbols.length && HAS_TWELVE_DATA) {
         const tasks = twelveSymbols.map(async (symbol) => {
@@ -536,10 +537,10 @@ async function refreshUniverse(symbols: string[]) {
 
                 if (!ohlc || ohlc.length === 0) {
                     const existing = cacheState.entries.get(meta.symbol);
-                    if (existing) {
-                        return;
+                    if (!existing) {
+                        twelveFailures.push(symbol);
+                        console.warn('[market] TwelveData returned empty OHLC', { symbol: meta.symbol, twelveSymbol });
                     }
-                    console.warn('[market] TwelveData returned empty OHLC', { symbol: meta.symbol, twelveSymbol });
                     return;
                 }
 
@@ -558,6 +559,7 @@ async function refreshUniverse(symbols: string[]) {
                 cacheState.entries.set(meta.symbol, { data: marketData, timestamp: Date.now() });
             } catch (error) {
                 if (isRateLimitError(error)) {
+                    twelveFailures.push(symbol);
                     return;
                 }
 
@@ -570,6 +572,7 @@ async function refreshUniverse(symbols: string[]) {
                             message: error instanceof Error ? error.message : String(error),
                         });
                     }
+                    twelveFailures.push(symbol);
                     return;
                 }
 
@@ -578,17 +581,24 @@ async function refreshUniverse(symbols: string[]) {
                     twelveSymbol,
                     message: error instanceof Error ? error.message : String(error),
                 });
+                twelveFailures.push(symbol);
             }
         });
 
         await Promise.allSettled(tasks);
     }
 
-    const remainingSymbols = finnhubSymbols.length ? finnhubSymbols : (!HAS_TWELVE_DATA ? uniqueSymbols : []);
-    if (remainingSymbols.length) {
-        const ohlcMap = await fetchFinnhubBundle(remainingSymbols);
+    const remainingSymbols = Array.from(new Set([
+        ...finnhubSymbols,
+        ...twelveFailures,
+    ]));
 
-        remainingSymbols.forEach((symbol) => {
+    // If TwelveData is present but budgeted, still try Finnhub for symbols without fresh candles.
+    const fallbackTargets = remainingSymbols.length ? remainingSymbols : (!HAS_TWELVE_DATA ? uniqueSymbols : []);
+    if (fallbackTargets.length) {
+        const ohlcMap = await fetchFinnhubBundle(fallbackTargets);
+
+        fallbackTargets.forEach((symbol) => {
             const meta = MARKET_UNIVERSE[symbol];
             const ohlc = ohlcMap[symbol];
 
