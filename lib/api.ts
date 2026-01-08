@@ -673,14 +673,14 @@ async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
     const nowSeconds = Math.floor(Date.now() / 1000);
     const fromSeconds = Math.floor((Date.now() - HISTORY_DAYS * 24 * 60 * 60 * 1000) / 1000);
 
-    const url = new URL(`${FINNHUB_BASE}/stock/candle`);
-    url.searchParams.set('symbol', meta.finnhubSymbol);
-    url.searchParams.set('resolution', 'D');
-    url.searchParams.set('from', String(fromSeconds));
-    url.searchParams.set('to', String(nowSeconds));
-    url.searchParams.set('token', FINNHUB_API_KEY);
+    const runRequest = async (symbol: string) => {
+        const url = new URL(`${FINNHUB_BASE}/stock/candle`);
+        url.searchParams.set('symbol', symbol);
+        url.searchParams.set('resolution', 'D');
+        url.searchParams.set('from', String(fromSeconds));
+        url.searchParams.set('to', String(nowSeconds));
+        url.searchParams.set('token', FINNHUB_API_KEY);
 
-    const runRequest = async () => {
         const response = await fetch(url.toString());
         let data: unknown;
         try {
@@ -703,7 +703,6 @@ async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
         const t = payload?.t;
 
         if (s !== 'ok' || !Array.isArray(t)) {
-            // Finnhub returns an error payload without `s` in some cases (e.g. invalid token / no access).
             console.warn(`[market] Finnhub returned no candle data for ${meta.symbol}`, {
                 s,
                 error: payload?.error,
@@ -737,15 +736,30 @@ async function fetchFinnhubOHLC(meta: InstrumentMeta): Promise<OHLC[] | null> {
         return candles.slice(-HISTORY_DAYS);
     };
 
-    try {
-        if (finnhubLimiter) {
-            return await finnhubLimiter.schedule(runRequest);
-        }
-        return await runRequest();
-    } catch (error) {
-        console.error(`[market] Finnhub request failed for ${meta.symbol}`, error);
-        return null;
+    const attemptSymbols = [meta.finnhubSymbol];
+    if (meta.twelveDataSymbol && meta.twelveDataSymbol !== meta.finnhubSymbol) {
+        attemptSymbols.push(meta.twelveDataSymbol);
     }
+
+    const runWithLimiter = async (symbol: string) => {
+        if (finnhubLimiter) {
+            return finnhubLimiter.schedule(() => runRequest(symbol));
+        }
+        return runRequest(symbol);
+    };
+
+    for (const sym of attemptSymbols) {
+        try {
+            const result = await runWithLimiter(sym);
+            if (result && result.length) {
+                return result;
+            }
+        } catch (error) {
+            console.warn(`[market] Finnhub request failed for ${meta.symbol} using ${sym}`, error);
+        }
+    }
+
+    return null;
 }
 
 async function fetchFinnhubQuote(meta: InstrumentMeta): Promise<number | null> {
@@ -754,14 +768,19 @@ async function fetchFinnhubQuote(meta: InstrumentMeta): Promise<number | null> {
         return null;
     }
 
-    const url = new URL(`${FINNHUB_BASE}/quote`);
-    url.searchParams.set('symbol', meta.finnhubSymbol);
-    url.searchParams.set('token', FINNHUB_API_KEY);
+    const attemptSymbols = [meta.finnhubSymbol];
+    if (meta.twelveDataSymbol && meta.twelveDataSymbol !== meta.finnhubSymbol) {
+        attemptSymbols.push(meta.twelveDataSymbol);
+    }
 
-    const runRequest = async () => {
+    const runRequest = async (symbol: string) => {
+        const url = new URL(`${FINNHUB_BASE}/quote`);
+        url.searchParams.set('symbol', symbol);
+        url.searchParams.set('token', FINNHUB_API_KEY);
+
         const response = await fetch(url.toString());
         if (!response.ok) {
-            console.warn(`[market] Finnhub quote HTTP ${response.status} for ${meta.symbol}`);
+            console.warn(`[market] Finnhub quote HTTP ${response.status} for ${meta.symbol} (${symbol})`);
             return null;
         }
 
@@ -769,29 +788,37 @@ async function fetchFinnhubQuote(meta: InstrumentMeta): Promise<number | null> {
         try {
             payload = await response.json();
         } catch (error) {
-            console.warn(`[market] Finnhub quote non-JSON for ${meta.symbol}`, error);
+            console.warn(`[market] Finnhub quote non-JSON for ${meta.symbol} (${symbol})`, error);
             return null;
         }
 
         const priceRaw = (payload as Record<string, unknown>)?.c;
         const price = Number(priceRaw);
         if (!Number.isFinite(price)) {
-            console.warn(`[market] Finnhub quote missing price for ${meta.symbol}`, payload);
+            console.warn(`[market] Finnhub quote missing price for ${meta.symbol} (${symbol})`, payload);
             return null;
         }
 
         return price;
     };
 
-    try {
+    const runWithLimiter = async (symbol: string) => {
         if (finnhubLimiter) {
-            return await finnhubLimiter.schedule(runRequest);
+            return finnhubLimiter.schedule(() => runRequest(symbol));
         }
-        return await runRequest();
-    } catch (error) {
-        console.warn(`[market] Finnhub quote failed for ${meta.symbol}`, error);
-        return null;
+        return runRequest(symbol);
+    };
+
+    for (const sym of attemptSymbols) {
+        try {
+            const result = await runWithLimiter(sym);
+            if (result !== null) return result;
+        } catch (error) {
+            console.warn(`[market] Finnhub quote failed for ${meta.symbol} using ${sym}`, error);
+        }
     }
+
+    return null;
 }
 
 async function fetchIndicatorBundle(symbols: string[]): Promise<Record<string, IndicatorSnapshot>> {
