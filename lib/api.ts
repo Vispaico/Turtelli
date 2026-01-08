@@ -517,11 +517,14 @@ async function refreshUniverse(symbols: string[]) {
     const uniqueSymbols = Array.from(new Set(symbols)).filter((symbol) => MARKET_UNIVERSE[symbol]);
     if (uniqueSymbols.length === 0) return;
 
-    const candleSymbols = HAS_TWELVE_DATA ? selectCandleSymbols(uniqueSymbols) : uniqueSymbols;
     const indicatorMap = await fetchIndicatorBundle(uniqueSymbols);
 
-    if (HAS_TWELVE_DATA) {
-        const tasks = candleSymbols.map(async (symbol) => {
+    const twelveSymbols = HAS_TWELVE_DATA ? selectCandleSymbols(uniqueSymbols) : [];
+    const twelveSet = new Set(twelveSymbols);
+    const finnhubSymbols = uniqueSymbols.filter((symbol) => !twelveSet.has(symbol));
+
+    if (twelveSymbols.length && HAS_TWELVE_DATA) {
+        const tasks = twelveSymbols.map(async (symbol) => {
             const meta = MARKET_UNIVERSE[symbol];
             if (!meta) return;
 
@@ -579,10 +582,13 @@ async function refreshUniverse(symbols: string[]) {
         });
 
         await Promise.allSettled(tasks);
-    } else {
-        const ohlcMap = await fetchFinnhubBundle(candleSymbols);
+    }
 
-        candleSymbols.forEach((symbol) => {
+    const remainingSymbols = finnhubSymbols.length ? finnhubSymbols : (!HAS_TWELVE_DATA ? uniqueSymbols : []);
+    if (remainingSymbols.length) {
+        const ohlcMap = await fetchFinnhubBundle(remainingSymbols);
+
+        remainingSymbols.forEach((symbol) => {
             const meta = MARKET_UNIVERSE[symbol];
             const ohlc = ohlcMap[symbol];
 
