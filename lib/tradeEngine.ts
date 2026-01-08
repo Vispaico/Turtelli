@@ -278,8 +278,24 @@ export async function getSignalSnapshot(options: { force?: boolean } = {}): Prom
         await refreshDaily(false);
     }
 
-    if (state.openTrades.size > 0 && (now - state.lastFast >= FAST_POLL_MS)) {
-        await withLock(refreshActiveTrades);
+    if (state.openTrades.size > 0) {
+        const openSymbols = Array.from(state.openTrades.keys());
+
+        // Always fetch fresh quotes for open trades per request so UI shows current P&L.
+        await refreshLiveQuotes(openSymbols);
+
+        // If fast timer is stale, also run exit evaluation.
+        if (now - state.lastFast >= FAST_POLL_MS) {
+            await withLock(refreshActiveTrades);
+        } else {
+            // Even without full refresh, update exits if quotes moved enough.
+            const updatedMarkets = openSymbols
+                .map((symbol) => getCachedMarketData(symbol))
+                .filter((item): item is MarketData => Boolean(item));
+            if (updatedMarkets.length) {
+                evaluateExits(updatedMarkets);
+            }
+        }
     }
 
     return state.snapshot ?? {
