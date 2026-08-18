@@ -13,8 +13,8 @@ CRITICAL: This code is the source of truth for all trading decisions.
 AI systems MUST NOT override or modify these rules.
 """
 
-from dataclasses import dataclass, field
-from decimal import Decimal
+from dataclasses import dataclass
+from decimal import Decimal, ROUND_DOWN
 from typing import List, Optional, Tuple
 from enum import Enum
 
@@ -52,6 +52,15 @@ class DailyBar:
 
 
 @dataclass
+class DonchianChannel:
+    """Donchian channel values for a given date."""
+    date: str
+    high: Decimal  # Upper channel (highest high)
+    low: Decimal   # Lower channel (lowest low)
+    period: int
+
+
+@dataclass
 class StrategyConfig:
     """Configuration for a Turtle strategy."""
     name: str
@@ -72,15 +81,6 @@ class StrategyConfig:
     max_units: int = 4
     unit_risk_percent: Decimal = Decimal("0.01")
     max_portfolio_risk_percent: Decimal = Decimal("0.04")
-
-
-@dataclass
-class DonchianChannel:
-    """Donchian channel values for a given date."""
-    date: str
-    high: Decimal  # Upper channel (highest high)
-    low: Decimal   # Lower channel (lowest low)
-    period: int
 
 
 @dataclass
@@ -126,7 +126,7 @@ def calculate_donchian_channel(
     bars: List[DailyBar],
     period: int,
     current_date: str,
-) -> Optional[DailyBar]:
+) -> Optional[DonchianChannel]:
     """
     Calculate Donchian channel high/low for a given period.
     
@@ -140,8 +140,7 @@ def calculate_donchian_channel(
         current_date: The date we're calculating for
         
     Returns:
-        The bar with the highest high and lowest low in the period,
-        or None if insufficient data
+        DonchianChannel with high/low or None if insufficient data
     """
     if len(bars) < period:
         return None
@@ -159,16 +158,12 @@ def calculate_donchian_channel(
     highest_high = max(b.high for b in period_bars)
     lowest_low = min(b.low for b in period_bars)
     
-    # Return a synthetic bar representing the channel
-    return DailyBar(
+    return DonchianChannel(
         date=current_date,
-        open=period_bars[0].open,
         high=highest_high,
         low=lowest_low,
-        close=period_bars[-1].close,
-        volume=0,
-        adjusted_close=period_bars[-1].adjusted_close,
-    )  # type: ignore[arg-type]
+        period=period,
+    )
 
 
 def calculate_atr(
@@ -208,7 +203,7 @@ def calculate_atr(
         return None
     
     # Calculate True Range for each bar
-    true_ranges = []
+    true_ranges: List[Decimal] = []
     for i in range(1, len(eligible_bars)):
         bar = eligible_bars[i]
         prev_bar = eligible_bars[i - 1]
@@ -228,7 +223,7 @@ def calculate_atr(
     for tr in true_ranges[period:]:
         atr = (atr * (period - 1) + tr) / period
     
-    return atr
+    return atr  # type: ignore[return-value]
 
 
 def calculate_position_size(
@@ -238,7 +233,6 @@ def calculate_position_size(
     stop_n: Decimal,
     current_price: Decimal,
     allow_fractional: bool = False,
-    price_precision: int = 2,
     min_quantity: Decimal = Decimal("1"),
 ) -> Decimal:
     """
@@ -255,13 +249,12 @@ def calculate_position_size(
         stop_n: Stop distance in N units
         current_price: Current price
         allow_fractional: Whether fractional shares are allowed
-        price_precision: Decimal places for price
         min_quantity: Minimum tradable quantity
         
     Returns:
         Number of shares to trade
     """
-    if atr <= 0 or current_price <= 0:
+    if atr <= 0 or current_price <= 0 or equity <= 0:
         return Decimal("0")
     
     # Risk amount in dollars
@@ -284,10 +277,10 @@ def calculate_position_size(
     # Apply rounding
     if allow_fractional:
         # Round to 4 decimal places for fractional
-        quantity = raw_quantity.quantize(Decimal("0.0001"))
+        quantity = raw_quantity.quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
     else:
         # Round down to whole shares
-        quantity = raw_quantity.to_integral_value(rounding="ROUND_DOWN")
+        quantity = raw_quantity.to_integral_value(rounding=ROUND_DOWN)
     
     # Enforce minimum
     if quantity < min_quantity:
@@ -357,7 +350,6 @@ def calculate_pyramid_entry(
 
 
 def check_breakout(
-    bars: List[DailyBar],
     channel: DonchianChannel,
     direction: TradeDirection,
     current_bar: DailyBar,
@@ -371,7 +363,6 @@ def check_breakout(
     SHORT breakout: close < channel lower
     
     Args:
-        bars: Historical bars
         channel: Donchian channel
         direction: Expected direction
         current_bar: Today's bar (to check close)
@@ -386,7 +377,6 @@ def check_breakout(
 
 
 def check_exit(
-    bars: List[DailyBar],
     exit_channel: DonchianChannel,
     position_direction: TradeDirection,
     current_bar: DailyBar,
@@ -398,7 +388,6 @@ def check_exit(
     SHORT exit: close > exit channel upper
     
     Args:
-        bars: Historical bars
         exit_channel: Exit Donchian channel
         position_direction: Direction of open position
         current_bar: Today's bar
@@ -420,8 +409,8 @@ def calculate_stop_update(
     """
     Update stop loss — stops only move in the direction of the trade.
     
-    LONG: stop can only go UP
-    SHORT: stop can only go DOWN
+    LONG: stop can only go UP (tighter)
+    SHORT: stop can only go DOWN (tighter)
     
     Args:
         current_stop: Current stop level
@@ -453,17 +442,20 @@ def detect_near_breakout(
     Returns:
         Tuple of (direction, distance_percent, distance_atr) or None
     """
+    if current_price <= 0 or atr <= 0:
+        return None
+    
     # Check LONG proximity
     distance_to_upper = (channel_upper - current_price) / current_price
-    if distance_to_upper <= threshold_percent:
-        distance_atr = (channel_upper - current_price) / atr if atr > 0 else Decimal("999")
+    if distance_to_upper <= threshold_percent and distance_to_upper >= 0:
+        distance_atr = (channel_upper - current_price) / atr
         if distance_atr <= threshold_atr:
             return (TradeDirection.LONG, distance_to_upper, distance_atr)
     
     # Check SHORT proximity
     distance_to_lower = (current_price - channel_lower) / current_price
-    if distance_to_lower <= threshold_percent:
-        distance_atr = (current_price - channel_lower) / atr if atr > 0 else Decimal("999")
+    if distance_to_lower <= threshold_percent and distance_to_lower >= 0:
+        distance_atr = (current_price - channel_lower) / atr
         if distance_atr <= threshold_atr:
             return (TradeDirection.SHORT, distance_to_lower, distance_atr)
     

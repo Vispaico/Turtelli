@@ -1,74 +1,100 @@
-# Turtelli 2.0 — Trading Rules
+# Turtelli 2.0 — Trading Rules (Exact Assumptions)
 
 ## Overview
 
-Turtelli implements the Turtle Trading methodology as described by Curtis Faith in "Way of the Turtle" and the original rules developed by Richard Dennis and William Eckhardt.
-
-All rules are **deterministic** — no AI, LLM, or human discretion is involved in trade decisions.
+This document contains the EXACT rules implemented in the Turtelli quantitative engine. Every assumption is documented here. These rules are deterministic — no AI, LLM, or human discretion is involved.
 
 ---
 
-## System 1: Short-Term Breakouts
+## Donchian Channel Calculation
+
+### Formula
+```
+Channel High = MAX(high[i] for i in range(current_date - period, current_date))
+Channel Low = MIN(low[i] for i in range(current_date - period, current_date))
+```
+
+### Anti-Lookahead Rule
+- Only uses bars with date **strictly less than** `current_date`
+- The current day's prices are **NEVER** included in channel calculation
+- This prevents using future information
+
+### Boundary Conditions
+- With exactly `period` bars before `current_date`: channel is calculable
+- With `period - 1` bars: returns `None` (insufficient data)
+- Duplicate dates on the same day are both included in eligible bars
+
+---
+
+## ATR (Average True Range) Calculation
+
+### True Range Formula
+```
+TR[i] = MAX(
+    high[i] - low[i],
+    ABS(high[i] - close[i-1]),
+    ABS(low[i] - close[i-1])
+)
+```
+
+### Wilder's Smoothing
+```
+Initial ATR = SUM(TR[1:period+1]) / period
+ATR[i] = (ATR[i-1] * (period - 1) + TR[i]) / period
+```
+
+### Anti-Lookahead Rule
+- Only uses bars with date **strictly less than** `current_date`
+- Requires `period + 1` bars minimum (first bar has no previous close)
+- With exactly `period + 1` bars: ATR is calculable
+- With `period` bars: returns `None` (insufficient data)
+
+---
+
+## System 1 (Short-Term)
 
 ### Entry
 - **Channel Period**: 20 trading days
-- **Entry Trigger**: Price breaks above the 20-day high (LONG) or below the 20-day low (SHORT)
-- **Previous Winner Filter**: If the previous System 1 trade in this instrument was a winner, skip the signal
+- **Entry Trigger**: Close **strictly greater than** 20-day high
+- **Previous Winner Filter**: If previous System 1 trade in same instrument was a winner, skip
 
 ### Exit
 - **Exit Channel Period**: 10 trading days
-- **Exit Trigger**: Price breaks below the 10-day low (for LONG) or above the 10-day high (for SHORT)
-
-### ATR / N
-- **Period**: 20 days
-- **Smoothing**: Wilder's method (standard Turtle)
-- **Calculation**: `ATR = (previous_ATR × 13 + current_TR) / 14`
-
-Where `TR` (True Range) = `max(high - low, abs(high - prev_close), abs(low - prev_close))`
+- **Exit Trigger**: Close **strictly less than** 10-day low
 
 ---
 
-## System 2: Long-Term Breakouts
+## System 2 (Long-Term)
 
 ### Entry
 - **Channel Period**: 55 trading days
-- **Entry Trigger**: Price breaks above the 55-day high (LONG) or below the 55-day low (SHORT)
+- **Entry Trigger**: Close **strictly greater than** 55-day high
 - **Previous Winner Filter**: Disabled (always take the trade)
 
 ### Exit
 - **Exit Channel Period**: 20 trading days
-- **Exit Trigger**: Price breaks below the 20-day low (for LONG) or above the 20-day high (for SHORT)
+- **Exit Trigger**: Close **strictly less than** 20-day low
 
 ---
 
 ## Position Sizing
 
-### Unit Calculation
+### Formula
 ```
-unit_size = (equity × risk_percent) / (N × dollar_per_point)
+Unit Size = (Equity × Risk%) / (N × Dollar_Per_Point)
 ```
 
 Where:
-- `equity` = current portfolio equity
-- `risk_percent` = 1% per unit (configurable)
+- `Equity` = current portfolio equity
+- `Risk%` = 1% per unit (configurable)
 - `N` = ATR value
-- `dollar_per_point` = 1 for stocks/ETFs (1 point = $1)
+- `Dollar_Per_Point` = 1 (for stocks/ETFs)
 
-### Example (Turtelli Standard)
-```
-Equity: $10,000
-Risk: 1% = $100
-N (ATR): $5.00
-Unit size: $100 / $5.00 = 20 shares
-```
-
-### Example (Turtelli Micro)
-```
-Equity: $600
-Risk: 1% = $6
-N (ATR): $5.00
-Unit size: $6 / $5.00 = 1.2 shares → 1 share (if fractional disabled)
-```
+### Constraints
+- If calculated quantity exceeds available equity, reduce to what we can afford
+- Fractional shares: round to 4 decimal places (ROUND_DOWN)
+- Whole shares: round down to nearest integer
+- If quantity < `min_quantity`, return 0
 
 ---
 
@@ -76,141 +102,139 @@ Unit size: $6 / $5.00 = 1.2 shares → 1 share (if fractional disabled)
 
 ### Initial Stop
 ```
-LONG: entry_price - (2 × N)
-SHORT: entry_price + (2 × N)
+LONG: entry_price - (stop_n × ATR)
+SHORT: entry_price + (stop_n × ATR)
 ```
 
 ### Stop Updates
-- Stops only move in the direction of the trade (never widen)
-- On pyramid additions, stop is adjusted to maintain 2N from the most recent entry
+- Stops **only move** in the direction of the trade (never loosen)
+- LONG: stop can only go UP (tighter)
+- SHORT: stop can only go DOWN (tighter)
 
 ---
 
 ## Pyramiding
 
+### Entry Prices
+```
+LONG: base_entry + (unit_number × interval_n × ATR)
+SHORT: base_entry - (unit_number × interval_n × ATR)
+```
+
+### Default Configuration
+- `interval_n` = 0.5
+- `max_units` = 4
+
+### Example (LONG, base=$100, ATR=$5)
+```
+Unit 1: $100 + (1 × 0.5 × $5) = $102.50
+Unit 2: $100 + (2 × 0.5 × $5) = $105.00
+Unit 3: $100 + (3 × 0.5 × $5) = $107.50
+Unit 4: $100 + (4 × 0.5 × $5) = $110.00
+```
+
+---
+
+## Breakout Detection
+
 ### Rules
-- Maximum 4 units per position
-- Each additional unit: add at entry + (0.5 × N × unit_number)
-- Each unit is the same size (same risk per unit)
+- **LONG breakout**: Close **strictly greater than** channel high
+- **SHORT breakout**: Close **strictly less than** channel low
+- Close **exactly at** channel level = **NO** breakout (must exceed)
 
-### Example (LONG, N = $5.00)
-```
-Unit 1: Entry at $100.00, Stop at $90.00 (2N below)
-Unit 2: Entry at $102.50 (entry + 0.5N), Stop at $92.50
-Unit 3: Entry at $105.00 (entry + 1.0N), Stop at $95.00
-Unit 4: Entry at $107.50 (entry + 1.5N), Stop at $97.50
-```
-
-### Portfolio Constraints
-- **Turtelli Micro**: Max 3 pyramids (limited capital)
-- **Turtelli Standard**: Max 4 pyramids (full system)
+### Near-Breakout Detection
+- Within `threshold_percent` (default 2%) of breakout level
+- Within `threshold_atr` (default 0.5 ATR units) of breakout level
+- Returns `None` if price or ATR is zero
 
 ---
 
-## Risk Management
+## Exit Detection
 
-### Per-Trade Risk
-- Maximum 1% of equity per unit
-- Maximum 4% total portfolio risk across all positions
-
-### Correlation Limits
-- Maximum positions in same sector: configurable (default 2-3)
-- Maximum total positions: configurable (default 6-12)
-
-### Portfolio-Specific Rules
-
-| Setting | Micro ($600) | Standard ($10,000) |
-|---------|-------------|-------------------|
-| Initial Equity | $600 | $10,000 |
-| Risk Per Trade | 2% | 2% |
-| Max Correlated | 2 | 3 |
-| Max Positions | 6 | 12 |
-| Fractional | No | Yes |
-| Commission | $0 | $0 |
-| Slippage | 0.1% | 0.1% |
+### Rules
+- **LONG exit**: Close **strictly less than** exit channel low
+- **SHORT exit**: Close **strictly greater than** exit channel high
 
 ---
 
-## Anti-Lookahead Rules
+## Portfolio Configuration
 
-### Critical Constraints
-1. **Channel Calculation**: Today's channel uses bars up to and including yesterday's close only
-2. **ATR Calculation**: Uses completed bars only
-3. **Breakout Confirmation**: Requires close above/below channel (not just intraday touch)
-4. **Stop Calculation**: Uses entry price, not future prices
-5. **Position Sizing**: Uses equity at time of signal, not future equity
-
-### Testing
-- Automated tests verify no future data leakage
-- Backtesting uses point-in-time data reconstruction
-- Daily scan tests verify data cutoff timing
-
----
-
-## Signal Lifecycle States
-
-```
-DISCOVERED → WATCHING → ARMED → TRIGGERED → OPEN
-                                                ↓
-                                        PYRAMID_1 → PYRAMID_2 → PYRAMID_3
-                                                ↓
-                                        EXIT_PENDING → CLOSED
-
-Any state → CANCELLED
-Any state → INVALIDATED
-```
-
-### State Definitions
-- **DISCOVERED**: Instrument identified as potential opportunity
-- **WATCHING**: Approaching breakout level (within 2%)
-- **ARMED**: Breakout level set, waiting for price trigger
-- **TRIGGERED**: Price has broken out
-- **OPEN**: Position opened
-- **PYRAMID_N**: Nth pyramid unit added
-- **EXIT_PENDING**: Exit signal generated (opposite channel break)
-- **CLOSED**: Position fully closed
-- **CANCELLED**: Signal cancelled by user or system
-- **INVALIDATED**: Signal no longer valid (data correction, etc.)
-
----
-
-## Corporate Action Handling
-
-### Stock Splits
-- Recalculate all historical prices and levels
-- Adjust entry prices, stops, and channel levels
-- Record adjustment event in ledger
-
-### Dividends
-- Do NOT adjust entry prices for dividends
-- Dividends are captured as cash in portfolio
-- Channel calculations use adjusted prices
-
-### Delistings
-- Force-close any open positions
-- Record as forced exit with reason "delisting"
-- Update instrument status to inactive
-
----
-
-## Configuration
-
-All rules are configurable via `packages/strategy-config/src/turtle-defaults.json`.
-
-Example override for custom System 1:
+### Turtelli Micro ($600)
 ```json
 {
-  "name": "turtle_system_1_custom",
-  "entry": {
-    "entryDays": 25,
-    "exitDays": 12,
-    "previousWinnerFilter": false
-  },
-  "risk": {
-    "stopN": 2.5,
-    "maxUnits": 3
-  }
+  "initialEquity": 600,
+  "maxRiskPerTrade": 0.02,
+  "maxCorrelatedPositions": 2,
+  "maxTotalPositions": 6,
+  "allowFractional": false,
+  "commission": 0,
+  "slippage": 0.001
 }
 ```
 
-**Never hardcode magic constants in strategy code.**
+### Turtelli Standard ($10,000)
+```json
+{
+  "initialEquity": 10000,
+  "maxRiskPerTrade": 0.02,
+  "maxCorrelatedPositions": 3,
+  "maxTotalPositions": 12,
+  "allowFractional": true,
+  "commission": 0,
+  "slippage": 0.001
+}
+```
+
+---
+
+## Data Validation Rules
+
+### Daily Bar Validation
+- High must be ≥ Low
+- High must be ≥ Open and Close
+- Low must be ≤ Open and Close
+- All prices must be > 0
+- Volume must be ≥ 0
+- Low volume warning (configurable threshold)
+- Abnormal daily move warning (configurable threshold)
+
+### Bar Sequence Validation
+- No duplicate dates
+- Chronological order required
+- Missing sessions generate warnings
+
+### ATR Reasonability
+- ATR should be between 0.5% and 20% of price
+- Zero ATR is invalid
+
+---
+
+## Key Design Decisions
+
+1. **Close-based breakouts**: Must close above/below, not just intraday touch
+2. **Anti-loookahead**: All calculations use only data available before current_date
+3. **Strict inequalities**: Breakouts require exceeding, not touching, channel levels
+4. **Stops never loosen**: Only tighten in direction of trade
+5. **Deterministic**: No randomness, no discretion, no AI involvement in trade decisions
+
+---
+
+## Test Coverage
+
+The quantitative engine has 66 tests covering:
+- Donchian channel calculation
+- ATR calculation
+- Position sizing
+- Stop loss calculation
+- Pyramid entry calculation
+- Breakout detection
+- Exit detection
+- Near-breakout detection
+- Off-by-one errors
+- Missing candles
+- Duplicate candles
+- Price gaps
+- Timezone handling
+- Integration tests
+
+All tests use handcrafted fixtures with known correct answers.
