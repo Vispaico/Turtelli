@@ -1,0 +1,104 @@
+{
+  "strategies": [
+    {
+      "name": "turtle_system_1",
+      "displayName": "Turtle System 1",
+      "version": 1,
+      "entry": {
+        "channelType": "donchian",
+        "entryDays": 20,
+        "exitDays": 10,
+        "previousWinnerFilter": true,
+        "previousWinnerWindow": 1
+      },
+      "atr": {
+        "period": 20,
+        "smoothing": "wilder"
+      },
+      "risk": {
+        "stopN": 2.0,
+        "pyramidIntervalN": 0.5,
+        "maxUnits": 4,
+        "unitRiskPercent": 0.01,
+        "maxPortfolioRiskPercent": 0.04
+      },
+      "exit": {
+        "channelType": "donchian",
+        "channelDays": 10
+      }
+    },
+    {
+      "name": "turtle_system_2",
+      "displayName": "Turtle System 2",
+      "version": 1,
+      "entry": {
+        "channelType": "donchian",
+        "entryDays": 55,
+        "exitDays": 20,
+        "previousWinnerFilter": false
+      },
+      "atr": {
+        "period": 20,
+        "smoothing": "wilder"
+      },
+      "risk": {
+        "stopN": 2.0,
+        "pyramidIntervalN": 0.5,
+        "maxUnits": 4,
+        "unitRiskPercent": 0.01,
+        "maxPortfolioRiskPercent": 0.04
+      },
+      "exit": {
+        "channelType": "donchian",
+        "channelDays": 20
+      }
+    }
+  ],
+  "monitoring": {
+    "NORMAL": {
+      "pollIntervalMinutes": 1440
+    },
+    "WATCHING": {
+      "pollIntervalMinutes": 15
+    },
+    "NEAR_TRIGGER": {
+      "pollIntervalMinutes": 1
+    },
+    "ACTIVE_POSITION": {
+      "pollIntervalMinutes": 1
+    },
+    "NEAR_EXIT": {
+      "pollIntervalSeconds": 30
+    }
+  },
+  "nearBreakoutThresholds": {
+    "WATCHING": 0.02,
+    "NEAR_TRIGGER": 0.005
+  },
+  "portfolios": {
+    "TURTELLI_MICRO": {
+      "initialEquity": 600,
+      "maxRiskPerTrade": 0.02,
+      "maxCorrelatedPositions": 2,
+      "maxTotalPositions": 6,
+      "allowFractional": false,
+      "commission": 0,
+      "slippage": 0.001
+    },
+    "TURTELLI_STANDARD": {
+      "initialEquity": 10000,
+      "maxRiskPerTrade": 0.02,
+      "maxCorrelatedPositions": 3,
+      "maxTotalPositions": 12,
+      "allowFractional": true,
+      "commission": 0,
+      "slippage": 0.001
+    }
+  },
+  "validation": {
+    "maxDailyMovePercent": 0.5,
+    "minVolume": 100000,
+    "maxSpreadPercent": 0.05,
+    "requireConsecutiveBars": 20
+  }
+}

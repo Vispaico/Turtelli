@@ -1,0 +1,999 @@
+// ============================================================
+// Turtelli 2.0 — Database Schema
+// PostgreSQL + TimescaleDB
+// ============================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [timescaledb]
+}
+
+// ============================================================
+// AUTHENTICATION & AUTHORIZATION
+// ============================================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  passwordHash  String
+  name          String?
+  avatarUrl     String?
+
+  // Roles
+  role          UserRole  @default(USER)
+  
+  // OAuth
+  provider      String?   // "google", "github"
+  providerId    String?
+
+  // Subscription
+  subscription  Subscription?
+
+  // Relationships
+  sessions      Session[]
+  watchlists    Watchlist[]
+  notifications NotificationPreference[]
+  auditLogs     AuditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([provider, providerId])
+}
+
+enum UserRole {
+  USER
+  SIGNALS
+  PRO
+  ADMIN
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token        String   @unique
+  expiresAt    DateTime
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([token])
+  @@index([userId])
+}
+
+// ============================================================
+// SUBSCRIPTIONS & PLANS
+// ============================================================
+
+model Plan {
+  id            String   @id @default(cuid())
+  name          String   @unique // "free", "signals", "pro"
+  displayName   String
+  description   String?
+  
+  // Pricing
+  priceMonthly  Int      // in cents
+  priceAnnual   Int?     // in cents, null = no annual option
+  
+  // Stripe mapping
+  stripePriceIdMonthly  String?
+  stripePriceIdAnnual   String?
+  stripeProductId       String?
+  
+  // Features (JSON for flexibility)
+  features      Json     @default("{}")
+  
+  // Limits
+  maxWatchlists Int      @default(5)
+  maxAlerts     Int      @default(10)
+  
+  isActive      Boolean  @default(true)
+  
+  subscriptions Subscription[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Subscription {
+  id              String             @id @default(cuid())
+  userId          String             @unique
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId          String
+  plan            Plan               @relation(fields: [planId], references: [id])
+  
+  status          SubscriptionStatus @default(ACTIVE)
+  stripeSubscriptionId String?
+  stripeCustomerId     String?
+  
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAtPeriodEnd  Boolean  @default(false)
+  
+  trialStart  DateTime?
+  trialEnd    DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([stripeSubscriptionId])
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  TRIALING
+  UNPAID
+}
+
+// ============================================================
+// INSTRUMENTS & MARKET DATA
+// ============================================================
+
+model Exchange {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  countryCode String   // ISO 3166-1
+  timezone    String   // IANA timezone
+  currency    String   // ISO 4217
+  
+  tradingCalendar Json  @default("{}") // holidays, early closes
+  
+  instruments Instrument[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Instrument {
+  id          String   @id @default(cuid())
+  symbol      String   @unique
+  name        String
+  
+  // Classification
+  assetClass  AssetClass @default(EQUITY)
+  exchangeId  String
+  exchange    Exchange   @relation(fields: [exchangeId], references: [id])
+  country     String     // ISO 3166-1
+  currency    String     // ISO 4217
+  sector      String?
+  industry    String?
+  
+  // Trading properties
+  isActive       Boolean  @default(true)
+  fractional     Boolean  @default(false) // fractional shares allowed
+  pricePrecision Int      @default(2)     // decimal places
+  minQuantity    Decimal  @default(1) @db.Decimal(18, 8)
+  
+  // Provider mappings (JSON for flexibility)
+  providerMappings Json @default("{}") 
+  // e.g. {"polygon": "NVDA", "alphavantage": "NVDA", "yfinance": "NVDA"}
+  
+  // Data
+  dailyBars    DailyBar[]
+  intradayBars IntradayBar[]
+  corporateActions CorporateAction[]
+  signals      Signal[]
+  snapshots    InstrumentSnapshot[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([symbol])
+  @@index([assetClass])
+  @@index([isActive])
+}
+
+enum AssetClass {
+  EQUITY
+  ETF
+  INDEX
+  COMMODITY
+  FOREX
+  CRYPTO
+  FUTURE
+  BOND
+}
+
+model DailyBar {
+  id           String   @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+  
+  date         DateTime @db.Date
+  open         Decimal  @db.Decimal(18, 8)
+  high         Decimal  @db.Decimal(18, 8)
+  low          Decimal  @db.Decimal(18, 8)
+  close        Decimal  @db.Decimal(18, 8)
+  volume       BigInt   @db.BigInt
+  adjustedClose Decimal @db.Decimal(18, 8) // split/dividend adjusted
+  
+  // Data quality
+  dataSource   String   // "polygon", "yfinance", "alphavantage"
+  isValidated  Boolean  @default(false)
+  validationNotes Json?
+  
+  // Derived (populated by quant engine)
+  atr20        Decimal? @db.Decimal(18, 8)
+  atrN         Decimal? @db.Decimal(18, 8) // N period ATR
+  donchianUpper20 Decimal? @db.Decimal(18, 8)
+  donchianLower20 Decimal? @db.Decimal(18, 8)
+  donchianUpper55 Decimal? @db.Decimal(18, 8)
+  donchianLower55 Decimal? @db.Decimal(18, 8)
+  
+  createdAt    DateTime @default(now())
+
+  @@unique([instrumentId, date])
+  @@index([instrumentId, date(sort: Desc)])
+  @@index([date])
+}
+
+model IntradayBar {
+  id           String   @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+  
+  timestamp    DateTime
+  open         Decimal  @db.Decimal(18, 8)
+  high         Decimal  @db.Decimal(18, 8)
+  low          Decimal  @db.Decimal(18, 8)
+  close        Decimal  @db.Decimal(18, 8)
+  volume       BigInt   @db.BigInt
+  
+  interval     String   // "1m", "5m", "15m", "1h"
+  dataSource   String
+  
+  @@unique([instrumentId, timestamp, interval])
+  @@index([instrumentId, timestamp(sort: Desc)])
+}
+
+model CorporateAction {
+  id           String   @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+  
+  type         CorporateActionType
+  date         DateTime @db.Date
+  exDate       DateTime? @db.Date
+  
+  // Action-specific fields
+  fromSymbol   String?   // for symbol changes
+  toSymbol     String?
+  ratio        Decimal? @db.Decimal(18, 8) // split ratio (2.0 = 2-for-1)
+  dividendPerShare Decimal? @db.Decimal(18, 8)
+  
+  description  String?
+  source       String?
+  
+  createdAt    DateTime @default(now())
+
+  @@index([instrumentId, date])
+  @@index([type])
+}
+
+enum CorporateActionType {
+  SPLIT
+  REVERSE_SPLIT
+  DIVIDEND
+  SYMBOL_CHANGE
+  DELISTING
+  MERGER
+  SPIN_OFF
+}
+
+model InstrumentSnapshot {
+  id           String   @id @default(cuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+  
+  timestamp    DateTime
+  price        Decimal  @db.Decimal(18, 8)
+  volume       BigInt   @db.BigInt
+  bid          Decimal? @db.Decimal(18, 8)
+  ask          Decimal? @db.Decimal(18, 8)
+  spread       Decimal? @db.Decimal(18, 8)
+  
+  monitoringState MonitoringState @default(NORMAL)
+  dataSource   String
+  
+  @@index([instrumentId, timestamp(sort: Desc)])
+  @@index([monitoringState])
+}
+
+enum MonitoringState {
+  NORMAL
+  WATCHING
+  NEAR_TRIGGER
+  ACTIVE_POSITION
+  NEAR_EXIT
+}
+
+// ============================================================
+// STRATEGIES & SIGNALS
+// ============================================================
+
+model Strategy {
+  id          String   @id @default(cuid())
+  name        String   @unique // "turtle_system_1", "turtle_system_2"
+  displayName String
+  description String?
+  
+  // Version management
+  version     Int      @default(1)
+  configHash  String   // SHA-256 of the config JSON
+  config      Json     // full strategy configuration
+  
+  isActive    Boolean  @default(true)
+  
+  signals     Signal[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([name, version])
+}
+
+model Signal {
+  id              String      @id @default(cuid())
+  instrumentId    String
+  instrument      Instrument  @relation(fields: [instrumentId], references: [id])
+  strategyId      String
+  strategy        Strategy    @relation(fields: [strategyId], references: [id])
+  
+  // Signal details
+  direction       TradeDirection
+  status          SignalStatus @default(DISCOVERED)
+  
+  // Breakout levels
+  breakoutLevel   Decimal     @db.Decimal(18, 8) // the price level that triggers
+  exitLevel       Decimal     @db.Decimal(18, 8) // opposite channel exit
+  previousClose   Decimal?    @db.Decimal(18, 8) // close before signal
+  
+  // ATR / N
+  atr             Decimal     @db.Decimal(18, 8) // current ATR value
+  atrPeriod       Int         @default(20)
+  nValue          Decimal     @db.Decimal(18, 8) // N = ATR (same thing in Turtle)
+  
+  // Risk
+  initialStop     Decimal     @db.Decimal(18, 8)
+  stopDistance    Decimal     @db.Decimal(18, 8) // entry - stop
+  
+  // Current state
+  currentPrice    Decimal?    @db.Decimal(18, 8)
+  distancePercent Decimal?    @db.Decimal(10, 6) // distance from breakout as %
+  distanceAtr     Decimal?    @db.Decimal(10, 6) // distance in ATR units
+  
+  // Timestamps
+  discoveredAt    DateTime    @default(now())
+  armedAt         DateTime?
+  triggeredAt     DateTime?
+  invalidatedAt   DateTime?
+  closedAt        DateTime?
+  
+  // Relationships
+  events          SignalEvent[]
+  positions       Position[]
+  researchData    SignalResearch[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([instrumentId, status])
+  @@index([status])
+  @@index([direction])
+  @@index([discoveredAt(sort: Desc)])
+  @@unique([instrumentId, strategyId, direction, discoveredAt]) // one signal per direction per strategy per discovery window
+}
+
+enum TradeDirection {
+  LONG
+  SHORT
+}
+
+enum SignalStatus {
+  DISCOVERED      // just found
+  WATCHING        // approaching breakout
+  ARMED           // breakout level set, waiting for price
+  TRIGGERED       // price broke out
+  OPEN            // position(s) opened
+  PYRAMID_1       // first pyramid add
+  PYRAMID_2       // second pyramid add
+  PYRAMID_3       // third pyramid add
+  EXIT_PENDING    // exit signal generated
+  CLOSED          // position fully closed
+  CANCELLED       // user/system cancelled
+  INVALIDATED     // signal no longer valid
+}
+
+model SignalEvent {
+  id          String   @id @default(cuid())
+  signalId    String
+  signal      Signal   @relation(fields: [signalId], references: [id])
+  
+  eventType   SignalEventType
+  timestamp   DateTime @default(now())
+  
+  // State mutation
+  fromStatus  SignalStatus?
+  toStatus    SignalStatus?
+  
+  // Context values (immutable snapshot)
+  price       Decimal? @db.Decimal(18, 8)
+  volume      BigInt?  @db.BigInt
+  atr         Decimal? @db.Decimal(18, 8)
+  stopLevel   Decimal? @db.Decimal(18, 8)
+  exitLevel   Decimal? @db.Decimal(18, 8)
+  
+  // Metadata
+  reason      String
+  data        Json?    // additional context
+  softwareVersion String?
+  strategyVersion  Int?
+  
+  createdAt DateTime @default(now())
+
+  @@index([signalId, timestamp])
+  @@index([eventType])
+}
+
+enum SignalEventType {
+  SIGNAL_CREATED
+  SIGNAL_UPDATED
+  SIGNAL_ARMED
+  BREAKOUT_TRIGGERED
+  POSITION_OPENED
+  UNIT_ADDED
+  STOP_UPDATED
+  EXIT_LEVEL_UPDATED
+  EXIT_TRIGGERED
+  POSITION_CLOSED
+  SIGNAL_INVALIDATED
+  SIGNAL_CANCELLED
+  PRICE_VALIDATION_FAILED
+  MARKET_DATA_CORRECTED
+  SYSTEM_ERROR
+  PYRAMID_LEVEL_REACHED
+}
+
+// ============================================================
+// PORTFOLIOS & POSITIONS
+// ============================================================
+
+model Portfolio {
+  id              String   @id @default(cuid())
+  name            String   @unique // "TURTELLI_MICRO", "TURTELLI_STANDARD"
+  displayName     String
+  description     String?
+  
+  // Capital
+  initialEquity   Decimal  @db.Decimal(18, 2)
+  currentEquity   Decimal  @db.Decimal(18, 2)
+  
+  // Risk limits
+  maxRiskPerTrade Decimal  @db.Decimal(5, 4) // e.g. 0.02 = 2%
+  maxCorrelated   Int      @default(3)       // max positions in same sector
+  maxTotalPositions Int    @default(12)
+  
+  // Config
+  allowFractional Boolean  @default(false)
+  commission      Decimal  @default(0) @db.Decimal(10, 4) // per-trade commission
+  slippage        Decimal  @default(0) @db.Decimal(10, 4) // assumed slippage %
+  
+  isActive        Boolean  @default(true)
+  
+  // Relationships
+  positions       Position[]
+  fills           Fill[]
+  snapshots       PortfolioSnapshot[]
+  events          PortfolioEvent[]
+  tradeLedger     TradeLedger[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Position {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id])
+  signalId    String
+  signal      Signal    @relation(fields: [signalId], references: [id])
+  
+  status      PositionStatus @default(OPEN)
+  direction   TradeDirection
+  
+  // Position details
+  currentQuantity  Decimal  @db.Decimal(18, 8)
+  averageEntry     Decimal  @db.Decimal(18, 8)
+  totalCost        Decimal  @db.Decimal(18, 8)
+  
+  // Risk management
+  initialStop      Decimal  @db.Decimal(18, 8)
+  currentStop      Decimal  @db.Decimal(18, 8)
+  exitChannel      Decimal  @db.Decimal(18, 8) // opposite Donchian exit
+  
+  // Current state
+  currentPrice     Decimal? @db.Decimal(18, 8)
+  unrealizedPnl    Decimal? @db.Decimal(18, 8)
+  unrealizedPnlPct Decimal? @db.Decimal(10, 6)
+  
+  // High water mark
+  maxFavorableExcursion Decimal? @db.Decimal(18, 8) // best price reached
+  maxAdverseExcursion   Decimal? @db.Decimal(18, 8) // worst price reached
+  
+  // Pyramid tracking
+  pyramidCount     Int      @default(1) // current number of units
+  maxPyramids      Int      @default(3)
+  
+  // Timeline
+  openedAt         DateTime @default(now())
+  closedAt         DateTime?
+  closedPrice      Decimal? @db.Decimal(18, 8)
+  closedPnl        Decimal? @db.Decimal(18, 8)
+  closedPnlPct     Decimal? @db.Decimal(10, 6)
+  
+  // Relationships
+  fills            Fill[]
+  events           PositionEvent[]
+  skippedSkips     TradeSkipped[]
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([portfolioId, status])
+  @@index([signalId])
+  @@index([status])
+}
+
+enum PositionStatus {
+  OPEN
+  PARTIALLY_CLOSED
+  CLOSED
+  STOPPED_OUT
+  EXITED
+  LIQUIDATED
+}
+
+model PositionEvent {
+  id         String    @id @default(cuid())
+  positionId String
+  position   Position  @relation(fields: [positionId], references: [id])
+  
+  eventType  String    // "opened", "stop_updated", "pyramid_added", "closed", etc.
+  timestamp  DateTime  @default(now())
+  
+  // Snapshot
+  price      Decimal?  @db.Decimal(18, 8)
+  quantity   Decimal?  @db.Decimal(18, 8)
+  stopLevel  Decimal?  @db.Decimal(18, 8)
+  
+  reason     String
+  data       Json?
+  
+  createdAt DateTime @default(now())
+
+  @@index([positionId, timestamp])
+}
+
+model Fill {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id])
+  positionId  String?
+  position    Position? @relation(fields: [positionId], references: [id])
+  
+  symbol      String
+  direction   TradeDirection
+  
+  // Fill details
+  quantity    Decimal   @db.Decimal(18, 8)
+  price       Decimal   @db.Decimal(18, 8)
+  commission  Decimal   @default(0) @db.Decimal(10, 4)
+  slippage    Decimal   @default(0) @db.Decimal(10, 4)
+  totalCost   Decimal   @db.Decimal(18, 8)
+  
+  // Simulation
+  isSimulated Boolean   @default(true) // always true for paper trading
+  
+  executedAt  DateTime  @default(now())
+
+  @@index([portfolioId, executedAt(sort: Desc)])
+  @@index([symbol])
+}
+
+model PortfolioSnapshot {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id])
+  
+  date        DateTime  @db.Date
+  equity      Decimal   @db.Decimal(18, 2)
+  cash        Decimal   @db.Decimal(18, 2)
+  marketValue Decimal   @db.Decimal(18, 2)
+  
+  // Performance
+  dailyReturn Decimal?  @db.Decimal(10, 6)
+  totalReturn Decimal?  @db.Decimal(10, 6)
+  
+  // Risk
+  drawdown       Decimal? @db.Decimal(10, 6)
+  maxDrawdown    Decimal? @db.Decimal(10, 6)
+  openPositions  Int      @default(0)
+  
+  positionsJson  Json?    // snapshot of all open positions
+  
+  @@unique([portfolioId, date])
+  @@index([portfolioId, date(sort: Desc)])
+}
+
+model PortfolioEvent {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id])
+  
+  eventType   String
+  timestamp   DateTime  @default(now())
+  
+  // State
+  equityBefore Decimal? @db.Decimal(18, 2)
+  equityAfter  Decimal? @db.Decimal(18, 2)
+  
+  reason      String
+  data        Json?
+  
+  createdAt DateTime @default(now())
+
+  @@index([portfolioId, timestamp(sort: Desc)])
+}
+
+// ============================================================
+// TRADE LEDGER (PUBLIC)
+// ============================================================
+
+model TradeLedger {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id])
+  
+  // Trade identity
+  instrument  String
+  direction   TradeDirection
+  system      String   // "System 1", "System 2"
+  strategyVersion Int
+  
+  // Signal info
+  signalId    String?
+  breakoutLevel Decimal @db.Decimal(18, 8)
+  atrValue    Decimal  @db.Decimal(18, 8)
+  nValue      Decimal  @db.Decimal(18, 8)
+  
+  // Execution
+  entryPrice  Decimal  @db.Decimal(18, 8)
+  exitPrice   Decimal?
+  entryDate   DateTime @db.Date
+  exitDate    DateTime?
+  
+  // Position
+  quantity    Decimal  @db.Decimal(18, 8)
+  pyramided   Boolean  @default(false)
+  pyramidLevels Int   @default(1)
+  
+  // Performance
+  returnAbsolute Decimal? @db.Decimal(18, 2)
+  returnPercent  Decimal? @db.Decimal(10, 6)
+  
+  // Risk
+  initialStop Decimal  @db.Decimal(18, 8)
+  maxFavorableExcursion Decimal? @db.Decimal(10, 6)
+  maxAdverseExcursion   Decimal? @db.Decimal(10, 6)
+  maxDrawdown Decimal? @db.Decimal(10, 6)
+  
+  // Duration
+  holdingDays Int?
+  
+  // Metadata
+  entryReason String?
+  exitReason  String?
+  skippedReason String? // if portfolio skipped this trade
+  
+  // Research
+  aiScore     Int?     // TimesFM research score (0-100)
+  marketRegime String? // regime at time of trade
+  
+  createdAt   DateTime @default(now())
+
+  @@index([portfolioId, entryDate(sort: Desc)])
+  @@index([instrument])
+  @@index([direction])
+  @@index([system])
+}
+
+model TradeSkipped {
+  id          String    @id @default(cuid())
+  portfolioId String
+  portfolio   Portfolio @relation(fields: [portfolioId], references: [id])
+  
+  instrument  String
+  direction   TradeDirection
+  system      String
+  signalId    String?
+  
+  reason      String   // "insufficient_capital", "risk_limit", "correlation_exposure", etc.
+  details     Json?
+  
+  skippedAt   DateTime @default(now())
+
+  @@index([portfolioId, skippedAt(sort: Desc)])
+  @@index([reason])
+}
+
+// ============================================================
+// MARKET REGIME (RESEARCH)
+// ============================================================
+
+model MarketRegime {
+  id          String   @id @default(cuid())
+  
+  // Scope
+  scope       String   // "market", "sector", "instrument"
+  scopeId     String?  // instrument ID or sector name
+  
+  regime      RegimeType
+  
+  // Confidence / metrics
+  confidence  Decimal? @db.Decimal(5, 4)
+  volatility  Decimal? @db.Decimal(10, 6)
+  trendStrength Decimal? @db.Decimal(10, 6)
+  
+  // Period
+  startDate   DateTime @db.Date
+  endDate     DateTime? @db.Date
+  
+  // Source
+  modelVersion String?
+  config      Json?
+  
+  createdAt   DateTime @default(now())
+
+  @@index([scope, scopeId, startDate(sort: Desc)])
+  @@index([regime])
+}
+
+enum RegimeType {
+  TRENDING_UP
+  TRENDING_DOWN
+  RANGEBOUND
+  VOLATILITY_EXPANSION
+  VOLATILITY_CONTRACTION
+  TRANSITION
+}
+
+// ============================================================
+// TIMESFM RESEARCH (RESEARCH)
+// ============================================================
+
+model TimesfmForecast {
+  id          String   @id @default(cuid())
+  
+  instrumentId String
+  symbol       String
+  
+  // Forecast
+  forecastDate     DateTime @db.Date
+  forecastHorizon  Int      // days ahead
+  
+  // Predictions
+  predictedReturn    Decimal? @db.Decimal(10, 6)
+  predictedVolatility Decimal? @db.Decimal(10, 6)
+  predictedRange     Json?    // {low, high}
+  
+  // Quantiles
+  quantile10  Decimal? @db.Decimal(10, 6)
+  quantile25  Decimal? @db.Decimal(10, 6)
+  quantile50  Decimal? @db.Decimal(10, 6)
+  quantile75  Decimal? @db.Decimal(10, 6)
+  quantile90  Decimal? @db.Decimal(10, 6)
+  
+  // Metadata
+  modelVersion  String?
+  features      Json?    // input features snapshot
+  
+  // Outcome (filled later)
+  actualReturn  Decimal? @db.Decimal(10, 6)
+  resolvedAt    DateTime?
+  
+  createdAt     DateTime @default(now())
+
+  @@index([symbol, forecastDate(sort: Desc)])
+  @@index([forecastDate])
+}
+
+// ============================================================
+// NOTIFICATIONS
+// ============================================================
+
+model NotificationPreference {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  channel     NotificationChannel
+  enabled     Boolean   @default(true)
+  
+  // Event types to notify
+  onSignalArmed      Boolean  @default(false)
+  onBreakoutTriggered Boolean @default(true)
+  onPositionOpened   Boolean  @default(true)
+  onPyramidReached   Boolean  @default(true)
+  onStopReached      Boolean  @default(true)
+  onExitTriggered    Boolean  @default(true)
+  onPositionClosed   Boolean  @default(true)
+  onDailySummary     Boolean  @default(true)
+  onWeeklySummary    Boolean  @default(true)
+  
+  // Channel-specific config
+  config      Json?    // email address, telegram chat ID, etc.
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, channel])
+  @@index([userId])
+}
+
+enum NotificationChannel {
+  EMAIL
+  WEB_PUSH
+  TELEGRAM
+  DISCORD
+  SLACK
+  SMS
+  MOBILE_PUSH
+}
+
+model NotificationLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  
+  channel     NotificationChannel
+  eventType   String   // matches SignalEventType
+  
+  // Content
+  subject     String?
+  body        String
+  signalId    String?
+  
+  // Delivery
+  status      String   @default("pending") // pending, sent, delivered, failed
+  error       String?
+  externalId  String?  // message ID from provider
+  
+  sentAt      DateTime?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status])
+  @@index([signalId])
+}
+
+// ============================================================
+// WATCHLISTS
+// ============================================================
+
+model Watchlist {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  name        String
+  instruments Json     @default("[]") // array of instrument IDs
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ============================================================
+// SYSTEM & AUDIT
+// ============================================================
+
+model SystemHealth {
+  id          String   @id @default(cuid())
+  
+  component   String   // "market_data", "scanner", "quant_engine", etc.
+  status      String   // "healthy", "degraded", "down"
+  
+  lastCheck   DateTime @default(now())
+  lastSuccess DateTime?
+  
+  metrics     Json?    // component-specific metrics
+  error       String?
+  
+  @@unique([component])
+  @@index([status])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id])
+  
+  action      String   // "login", "subscription_change", "admin_action", etc.
+  resource    String?
+  resourceId  String?
+  
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+  
+  createdAt   DateTime @default(now())
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([action])
+  @@index([resource])
+}
+
+model DataValidationEvent {
+  id          String   @id @default(cuid())
+  
+  instrumentId String
+  instrument   Instrument? @relation(fields: [instrumentId], references: [id])
+  
+  eventType   String   // "duplicate_bar", "missing_session", "impossible_price", etc.*
+  severity    String   // "warning", "error", "critical"
+  
+  date        DateTime @db.Date
+  details     Json
+  
+  resolved    Boolean  @default(false)
+  resolvedAt  DateTime?
+  resolvedBy  String?
+  
+  createdAt   DateTime @default(now())
+
+  @@index([instrumentId, createdAt(sort: Desc)])
+  @@index([severity])
+  @@index([resolved])
+}
+
+// ============================================================
+// RESEARCH EXPERIMENTS
+// ============================================================
+
+model ResearchExperiment {
+  id          String   @id @default(cuid())
+  
+  name        String
+  description String
+  
+  // Design
+  hypothesis  String
+  methodology String
+  config      Json
+  
+  // Status
+  status      String   @default("planned") // planned, running, completed, failed
+  
+  // Results
+  results     Json?
+  conclusions String?
+  
+  startDate   DateTime?
+  endDate     DateTime?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

@@ -1,0 +1,13 @@
+# Turtelli 2.0 — Grafana Dashboards
+apiVersion: 1
+
+providers:
+  - name: "Turtelli"
+    orgId: 1
+    folder: "Turtelli"
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

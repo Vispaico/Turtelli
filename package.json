@@ -1,0 +1,41 @@
+{
+  "name": "turtelli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Turtelli 2.0 \u2014 Turtle Trading signal engine with radical transparency",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "test": "turbo test",
+    "test:unit": "turbo test --filter='!@turtelli/e2e'",
+    "test:e2e": "turbo test --filter=@turtelli/e2e",
+    "db:migrate": "pnpm --filter @turtelli/db migrate",
+    "db:generate": "pnpm --filter @turtelli/db generate",
+    "db:seed": "pnpm --filter @turtelli/db seed",
+    "db:studio": "pnpm --filter @turtelli/db studio",
+    "clean": "turbo clean",
+    "prepare": "husky",
+    "quant:scan": "cd apps/quant-engine && python -m turtelli_quant.scanner",
+    "quant:backtest": "cd apps/quant-engine && python -m turtelli_quant.backtest"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.0",
+    "husky": "^9.1.0",
+    "lint-staged": "^15.2.0"
+  },
+  "lint-staged": {
+    "*.{ts,tsx,svelte}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{py}": [
+      "ruff format",
+      "ruff check --fix"
+    ]
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  }
+}

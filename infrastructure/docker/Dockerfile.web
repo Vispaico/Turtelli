@@ -1,0 +1,9 @@
+FROM base AS builder
+COPY apps/web/ ./apps/web/
+RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store/v10     pnpm install --frozen-lockfile &&     pnpm --filter @turtelli/web build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+COPY --from=builder /app/apps/web/.output ./.output
+EXPOSE 3000
+CMD ["node", ".output/server/index.mjs"]

@@ -1,0 +1,132 @@
+version: "3.9"
+
+services:
+  # --- PostgreSQL + TimescaleDB ---
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: turtelli-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: turtelli
+      POSTGRES_PASSWORD: turtelli
+      POSTGRES_DB: turtelli
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U turtelli"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- Redis ---
+  redis:
+    image: redis:7-alpine
+    container_name: turtelli-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # --- API Server ---
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.api
+    container_name: turtelli-api
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://turtelli:turtelli@postgres:5432/turtelli
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./packages:/app/packages
+
+  # --- Web (SvelteKit) ---
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.web
+    container_name: turtelli-web
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      API_URL: http://api:3001
+    depends_on:
+      - api
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+
+  # --- Admin Dashboard ---
+  admin:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.admin
+    container_name: turtelli-admin
+    ports:
+      - "3002:3002"
+    environment:
+      NODE_ENV: development
+      API_URL: http://api:3001
+    depends_on:
+      - api
+
+  # --- Python Quant Engine ---
+  quant-engine:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile.quant
+    container_name: turtelli-quant
+    environment:
+      DATABASE_URL: postgresql://turtelli:turtelli@postgres:5432/turtelli
+      REDIS_URL: redis://redis:6379
+      MARKET_DATA_PROVIDER: yfinance
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/quant-engine:/app/apps/quant-engine
+
+  # --- Prometheus ---
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: turtelli-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+
+  # --- Grafana ---
+  grafana:
+    image: grafana/grafana:latest
+    container_name: turtelli-grafana
+    ports:
+      - "3003:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards
+      - ./infrastructure/grafana/datasources:/var/lib/grafana/datasources
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:
