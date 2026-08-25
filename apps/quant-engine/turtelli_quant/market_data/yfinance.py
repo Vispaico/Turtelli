@@ -101,13 +101,17 @@ class YFinanceProvider(MarketDataProvider):
         try:
             tk = self._ticker(symbol)
             auto_adjust = False  # we want raw OHLC + explicit adjusted close
-            df = tk.history(
-                start=start_date,
-                end=end_date,
+            kwargs = dict(
                 interval="1d",
                 auto_adjust=auto_adjust,
                 actions=False,
             )
+            if start_date or end_date:
+                kwargs["start"] = start_date
+                kwargs["end"] = end_date
+            else:
+                kwargs["period"] = "2y"   # default window when unbounded
+            df = tk.history(**kwargs)
         except Exception as e:
             raise MarketDataError(f"Failed to fetch daily bars: {e}", provider=self.name, symbol=symbol)
 
