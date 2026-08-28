@@ -1,57 +1,67 @@
 // ============================================================
-// Turtelli 2.0 — Signal Routes
+// Turtelli 2.0 — Signal Routes (live store backed)
 // ============================================================
 
 import type { FastifyInstance } from "fastify";
+import { liveStore } from "../services/liveStore.js";
 
 export async function signalRoutes(app: FastifyInstance) {
-  // GET /api/signals — List all signals with filtering
-  app.get("/", async (request, reply) => {
-    // TODO: Implement signal listing with filters
-    // Query params: status, direction, system, instrument, limit, offset
+  // GET /api/signals — list signals with filtering
+  app.get("/", async (request) => {
+    const { state, direction, limit } = request.query as {
+      state?: string;
+      direction?: "LONG" | "SHORT";
+      limit?: string;
+    };
+    const signals = liveStore.listSignals({
+      state: state as never,
+      direction,
+      limit: limit ? parseInt(limit, 10) : 100,
+    });
     return {
-      signals: [],
-      total: 0,
-      limit: 50,
-      offset: 0,
+      signals,
+      total: signals.length,
     };
   });
 
-  // GET /api/signals/:id — Get single signal with full details
+  // GET /api/signals/active — counts by state + active list
+  app.get("/active", async () => {
+    const active = liveStore.listSignals().filter((s) =>
+      ["DISCOVERED", "WATCHING", "NEAR_TRIGGER", "TRIGGERED", "OPEN"].includes(
+        s.state
+      )
+    );
+    const counts: Record<string, number> = {};
+    for (const s of liveStore.listSignals()) {
+      counts[s.state] = (counts[s.state] || 0) + 1;
+    }
+    return { signals: active, counts };
+  });
+
+  // GET /api/signals/near-breakout — scanner
+  app.get("/near-breakout", async (request) => {
+    const { maxDistancePct, limit } = request.query as {
+      maxDistancePct?: string;
+      limit?: string;
+    };
+    const instruments = liveStore.nearBreakout(
+      maxDistancePct ? parseFloat(maxDistancePct) : 5
+    );
+    return {
+      instruments: typeof limit === "string"
+        ? instruments.slice(0, parseInt(limit, 10))
+        : instruments,
+      total: instruments.length,
+    };
+  });
+
+  // GET /api/signals/:id — single signal detail
   app.get("/:id", async (request, reply) => {
     const { id } = request.params as { id: string };
-    // TODO: Implement signal detail with events
-    return {
-      signal: null,
-      events: [],
-    };
-  });
-
-  // GET /api/signals/active — Get all active signals
-  app.get("/active", async () => {
-    // TODO: Implement active signals query
-    return {
-      signals: [],
-      counts: {
-        discovered: 0,
-        watching: 0,
-        armed: 0,
-        triggered: 0,
-        open: 0,
-      },
-    };
-  });
-
-  // GET /api/signals/near-breakout — Near-breakout scanner
-  app.get("/near-breakout", async (request, reply) => {
-    const { limit, sortBy } = request.query as {
-      limit?: number;
-      sortBy?: string;
-    };
-    // TODO: Implement near-breakout scanner
-    return {
-      instruments: [],
-      total: 0,
-    };
+    const signal = liveStore.getSignal(id);
+    if (!signal) {
+      return reply.code(404).send({ error: "signal_not_found", id });
+    }
+    return { signal };
   });
 }

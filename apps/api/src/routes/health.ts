@@ -3,6 +3,7 @@
 // ============================================================
 
 import type { FastifyInstance } from "fastify";
+import { liveStore, SignalRecord, PositionRecord, SkipRecord, PortfolioSnapshot, ScanStatus } from "../services/liveStore.js";
 
 export async function healthRoutes(app: FastifyInstance) {
   app.get("/", async () => {
@@ -25,4 +26,5 @@ export async function healthRoutes(app: FastifyInstance) {
       },
     };
   });
+
 }

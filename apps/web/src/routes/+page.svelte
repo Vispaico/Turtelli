@@ -1,174 +1,159 @@
-// ============================================================
-// Turtelli 2.0 — Homepage / Dashboard
-// ============================================================
-
 <script lang="ts">
-  import type { PageData } from "./$types";
+  import "../app.css";
+  import { api, type PortfolioSnapshot, type ScanStatus } from "$lib/api";
+  import { onMount } from "svelte";
 
-  export let data: PageData;
+  let portfolios: PortfolioSnapshot[] = [];
+  let scan: ScanStatus | null = null;
+  let loading = true;
+  let apiDown = false;
 
-  // Mock data for now — will be replaced with real API calls
-  const stats = {
-    marketsScanned: 0,
-    signalsDiscovered: 0,
-    signalsArmed: 0,
-    signalsTriggeredToday: 0,
-    activePositions: 0,
-    recentlyClosed: 0,
-  };
+  onMount(async () => {
+    try {
+      const [p, s] = await Promise.all([api.portfolios(), api.scanStatus()]);
+      portfolios = p;
+      scan = s;
+    } catch {
+      apiDown = true;
+    } finally {
+      loading = false;
+    }
+  });
 
-  const portfolios = {
-    micro: {
-      name: "Turtelli Micro",
-      equity: 600,
-      return: 0,
-      drawdown: 0,
-      trades: 0,
-    },
-    standard: {
-      name: "Turtelli Standard",
-      equity: 10000,
-      return: 0,
-      drawdown: 0,
-      trades: 0,
-    },
-  };
+  const fmt = (n: number) =>
+    n.toLocaleString("en-US", { style: "currency", currency: "USD" });
 </script>
 
-<svelte:head>
-  <title>Turtelli — Dashboard</title>
-  <meta name="description" content="Turtelli 2.0 — Radical Transparency in Turtle Trading" />
-</svelte:head>
+<div class="min-h-screen bg-neutral-950">
+  <!-- Nav -->
+  <nav class="border-b border-neutral-800/80 sticky top-0 z-50 bg-neutral-950/85 backdrop-blur">
+    <div class="max-w-6xl mx-auto px-5 h-16 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5">
+        <span class="text-2xl">🐢</span>
+        <span class="font-bold tracking-tight text-lg">Turtelli</span>
+      </a>
+      <div class="flex gap-6 text-sm text-neutral-400">
+        <a href="/scanner" class="hover:text-white transition">Scanner</a>
+        <a href="/trades" class="hover:text-white transition">Trades</a>
+        <a href="/methodology" class="hover:text-white transition">Methodology</a>
+      </div>
+    </div>
+  </nav>
 
-<!-- Hero Section -->
-<div class="text-center mb-12">
-  <h1 class="text-4xl font-bold text-neutral-50 mb-4">
-    🐢 Turtelli 2.0
-  </h1>
-  <p class="text-xl text-neutral-400 max-w-2xl mx-auto">
-    Autonomous Turtle Trading with Radical Transparency
-  </p>
-  <p class="text-sm text-neutral-500 mt-2 font-mono">
-    Last scan: No scans yet — system initializing
-  </p>
-</div>
+  <main class="max-w-6xl mx-auto px-5 py-12">
+    {#if loading}
+      <div class="animate-pulse space-y-4">
+        <div class="h-10 w-96 bg-neutral-900 rounded"></div>
+        <div class="h-24 bg-neutral-900 rounded"></div>
+        <div class="grid grid-cols-2 gap-4">
+          <div class="h-48 bg-neutral-900 rounded"></div>
+          <div class="h-48 bg-neutral-900 rounded"></div>
+        </div>
+      </div>
+    {:else if apiDown}
+      <!-- Failure state -->
+      <div class="border border-red-900/40 bg-red-950/20 rounded-xl p-8 text-center mt-16">
+        <div class="text-3xl mb-3">🔌</div>
+        <h2 class="text-lg font-semibold mb-1">Engine offline</h2>
+        <p class="text-sm text-neutral-400 max-w-md mx-auto">
+          The Turtelli API isn't responding. The system runs its market scan after
+          each close — check back soon.
+        </p>
+      </div>
+    {:else}
+      <!-- Hero -->
+      <header class="mb-10">
+        <div class="flex items-center gap-2 text-xs font-mono text-emerald-500/90 mb-3">
+          <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          AUTONOMOUS SYSTEM
+          {#if scan?.lastScanAt}
+            <span class="text-neutral-600 ml-2">
+              last scan {new Date(scan.lastScanAt).toLocaleString("en-US", { timeZone: "UTC" })} UTC
+            </span>
+          {/if}
+        </div>
+        <h1 class="text-4xl md:text-5xl font-bold tracking-tight leading-tight">
+          Turtle trading,<br />
+          <span class="text-neutral-500">executed in public.</span>
+        </h1>
+        <p class="text-neutral-400 mt-4 max-w-xl">
+          A deterministic rules engine watches the market every night and trades
+          two paper portfolios — a $600 Micro and a $10,000 Standard — with
+          every decision, win, loss, and skip recorded permanently.
+        </p>
 
-<!-- Stats Grid -->
-<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-12">
-  <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-    <div class="text-2xl font-bold text-neutral-50">{stats.marketsScanned}</div>
-    <div class="text-xs text-neutral-500 mt-1">Markets Scanned</div>
-  </div>
-  <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-    <div class="text-2xl font-bold text-blue-400">{stats.signalsDiscovered}</div>
-    <div class="text-xs text-neutral-500 mt-1">Signals Discovered</div>
-  </div>
-  <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-    <div class="text-2xl font-bold text-yellow-400">{stats.signalsArmed}</div>
-    <div class="text-xs text-neutral-500 mt-1">Signals Armed</div>
-  </div>
-  <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-    <div class="text-2xl font-bold text-green-400">{stats.signalsTriggeredToday}</div>
-    <div class="text-xs text-neutral-500 mt-1">Triggered Today</div>
-  </div>
-  <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-    <div class="text-2xl font-bold text-purple-400">{stats.activePositions}</div>
-    <div class="text-xs text-neutral-500 mt-1">Active Positions</div>
-  </div>
-  <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-4">
-    <div class="text-2xl font-bold text-neutral-400">{stats.recentlyClosed}</div>
-    <div class="text-xs text-neutral-500 mt-1">Recently Closed</div>
-  </div>
-</div>
+        {#if scan}
+          <div class="flex flex-wrap gap-x-8 gap-y-2 mt-6 text-sm font-mono text-neutral-500">
+            <span><span class="text-neutral-200">{scan.scannedCount}</span> markets scanned</span>
+            <span><span class="text-neutral-200">{scan.candidatesFound}</span> breakouts today</span>
+            <span><span class="text-neutral-200">{Object.values(scan.states ?? {}).reduce((a, b) => a + b, 0)}</span> universe size</span>
+          </div>
+        {/if}
+      </header>
 
-<!-- Portfolio Cards -->
-<div class="grid md:grid-cols-2 gap-6 mb-12">
-  <!-- Micro Portfolio -->
-  <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-6">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-semibold text-neutral-50">{portfolios.micro.name}</h2>
-      <span class="text-xs font-mono text-neutral-500">$600 initial</span>
-    </div>
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <div class="text-3xl font-bold text-neutral-50 font-mono">
-          ${portfolios.micro.equity.toFixed(2)}
-        </div>
-        <div class="text-xs text-neutral-500 mt-1">Current Equity</div>
-      </div>
-      <div>
-        <div class="text-3xl font-bold font-mono {portfolios.micro.return >= 0 ? 'text-long' : 'text-short'}">
-          {portfolios.micro.return >= 0 ? '+' : ''}{portfolios.micro.return.toFixed(2)}%
-        </div>
-        <div class="text-xs text-neutral-500 mt-1">Total Return</div>
-      </div>
-      <div>
-        <div class="text-xl font-mono text-short">
-          {portfolios.micro.drawdown.toFixed(2)}%
-        </div>
-        <div class="text-xs text-neutral-500 mt-1">Max Drawdown</div>
-      </div>
-      <div>
-        <div class="text-xl font-mono text-neutral-300">
-          {portfolios.micro.trades}
-        </div>
-        <div class="text-xs text-neutral-500 mt-1">Total Trades</div>
-      </div>
-    </div>
-    <div class="mt-4 h-32 bg-neutral-800 rounded flex items-center justify-center">
-      <span class="text-xs text-neutral-500">Equity curve will render here</span>
-    </div>
-  </div>
+      <!-- Portfolios -->
+      <section class="grid md:grid-cols-2 gap-4 mb-12">
+        {#each portfolios as p (p.portfolio)}
+          <a
+            href="/portfolio/{p.portfolio}"
+            class="group block border border-neutral-800 rounded-xl p-6 hover:border-neutral-600 transition-colors bg-gradient-to-b from-neutral-900/60 to-transparent"
+          >
+            <div class="flex justify-between items-start mb-5">
+              <div>
+                <div class="text-xs uppercase tracking-wider text-neutral-500 font-mono">
+                  {p.portfolio === "TURTELLI_MICRO" ? "Micro" : "Standard"}
+                </div>
+                <div class="text-3xl font-bold font-mono mt-1">{fmt(p.equity)}</div>
+              </div>
+              <div class={`text-right ${p.totalReturnPct >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                <div class="text-xl font-mono font-semibold">
+                  {p.totalReturnPct >= 0 ? "+" : ""}{p.totalReturnPct.toFixed(2)}%
+                </div>
+                <div class="text-[11px] text-neutral-500">since inception</div>
+              </div>
+            </div>
+            <div class="grid grid-cols-3 gap-2 text-center border-t border-neutral-800/70 pt-4">
+              <div>
+                <div class="font-mono text-sm">{fmt(p.initialEquity)}</div>
+                <div class="text-[11px] text-neutral-500">start</div>
+              </div>
+              <div>
+                <div class="font-mono text-sm">{p.openPositions}</div>
+                <div class="text-[11px] text-neutral-500">open</div>
+              </div>
+              <div>
+                <div class="font-mono text-sm text-red-400/90">−{p.maxDrawdownPct.toFixed(1)}%</div>
+                <div class="text-[11px] text-neutral-500">max DD</div>
+              </div>
+            </div>
+            <div class="mt-4 text-xs text-neutral-600 group-hover:text-neutral-400 transition">
+              View ledger →
+            </div>
+          </a>
+        {/each}
+      </section>
 
-  <!-- Standard Portfolio -->
-  <div class="bg-neutral-900 border border-neutral-800 rounded-lg p-6">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-semibold text-neutral-50">{portfolios.standard.name}</h2>
-      <span class="text-xs font-mono text-neutral-500">$10,000 initial</span>
-    </div>
-    <div class="grid grid-cols-2 gap-4">
-      <div>
-        <div class="text-3xl font-bold text-neutral-50 font-mono">
-          ${portfolios.standard.equity.toFixed(2)}
-        </div>
-        <div class="text-xs text-neutral-500 mt-1">Current Equity</div>
-      </div>
-      <div>
-        <div class="text-3xl font-bold font-mono {portfolios.standard.return >= 0 ? 'text-long' : 'text-short'}">
-          {portfolios.standard.return >= 0 ? '+' : ''}{portfolios.standard.return.toFixed(2)}%
-        </div>
-        <div class="text-xs text-neutral-500 mt-1">Total Return</div>
-      </div>
-      <div>
-        <div class="text-xl font-mono text-short">
-          {portfolios.standard.drawdown.toFixed(2)}%
-        </div>
-        <div class="text-xs text-neutral-500 mt-1">Max Drawdown</div>
-      </div>
-      <div>
-        <div class="text-xl font-mono text-neutral-300">
-          {portfolios.standard.trades}
-        </div>
-        <div class="text-xs text-neutral-500 mt-1">Total Trades</div>
-      </div>
-    </div>
-    <div class="mt-4 h-32 bg-neutral-800 rounded flex items-center justify-center">
-      <span class="text-xs text-neutral-500">Equity curve will render here</span>
-    </div>
-  </div>
-</div>
+      <!-- Transparency banner -->
+      <section class="border border-neutral-800 rounded-xl p-6 mb-12 bg-neutral-900/30">
+        <h2 class="font-semibold mb-2">No cherry-picking. No resets. Ever.</h2>
+        <p class="text-sm text-neutral-400 leading-relaxed">
+          Every trade these portfolios make is published — the winners
+          <em class="text-emerald-400 not-italic">and</em> the losers. When a portfolio can't
+          afford a signal or hits a risk limit, that skip is recorded too.
+          There is no admin button to reset balances; corrections can only ever be
+          new auditable events.
+        </p>
+      </section>
+    {/if}
+  </main>
 
-<!-- Near-Breakout Scanner Preview -->
-<div class="bg-neutral-900 border border-neutral-800 rounded-lg p-6">
-  <div class="flex items-center justify-between mb-4">
-    <h2 class="text-lg font-semibold text-neutral-50">Near-Breakout Scanner</h2>
-    <a href="/scanner" class="text-sm text-turtle-400 hover:text-turtle-300 transition-colors">
-      View All →
-    </a>
-  </div>
-  <div class="text-center py-8">
-    <span class="text-4xl mb-4 block">🔍</span>
-    <p class="text-neutral-400">No instruments near breakout yet</p>
-    <p class="text-xs text-neutral-500 mt-2">System will populate after first market scan</p>
-  </div>
+  <footer class="border-t border-neutral-800/80 mt-16">
+    <div class="max-w-6xl mx-auto px-5 py-8 text-xs text-neutral-600 space-y-2">
+      <p>
+        Turtelli is an educational paper-trading simulation. Nothing here is
+        investment advice. Past performance does not guarantee future results.
+      </p>
+      <p>Deterministic rules only — no AI decides trades in this system.</p>
+    </div>
+  </footer>
 </div>

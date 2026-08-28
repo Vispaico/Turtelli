@@ -8,6 +8,7 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 
 import { healthRoutes } from "./routes/health.js";
+import { ingestRoutes } from "./routes/ingest.js";
 import { signalRoutes } from "./routes/signals.js";
 import { portfolioRoutes } from "./routes/portfolios.js";
 import { instrumentRoutes } from "./routes/instruments.js";
@@ -44,6 +45,7 @@ async function main() {
 
   // --- Routes ---
   await app.register(healthRoutes, { prefix: "/health" });
+  await app.register(ingestRoutes, { prefix: "/internal" });
   await app.register(signalRoutes, { prefix: "/api/signals" });
   await app.register(portfolioRoutes, { prefix: "/api/portfolios" });
   await app.register(instrumentRoutes, { prefix: "/api/instruments" });

@@ -25,5 +25,6 @@
   },
   "dependencies": {
     "lightweight-charts": "^4.2.0"
-  }
+  },
+  "type": "module"
 }

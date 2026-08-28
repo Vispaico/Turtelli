@@ -2,16 +2,10 @@
 // Turtelli 2.0 — Individual Trade Page Server Load
 // ============================================================
 
-import type { PageLoad } from "./$types";
+import type { PageServerLoad } from "./$types";
 
-export const load: PageLoad = async ({ fetch, params }) => {
+export const load: PageServerLoad = async ({ params }) => {
   const { slug } = params;
-
-  // TODO: Fetch real trade data from API
-  // For now, return empty data
-  return {
-    slug,
-    trade: null,
-    timeline: [],
-  };
+  // Trade detail is fetched client-side so it always reflects live store.
+  return { slug };
 };

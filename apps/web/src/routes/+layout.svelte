@@ -1,68 +1,50 @@
-// ============================================================
-// Turtelli 2.0 — Root Layout
-// ============================================================
-
 <script lang="ts">
   import "../app.css";
 </script>
 
-<div class="min-h-screen bg-neutral-950">
-  <!-- Navigation -->
-  <nav class="border-b border-neutral-800 bg-neutral-950/80 backdrop-blur-sm sticky top-0 z-50">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-      <div class="flex items-center justify-between h-16">
-        <!-- Logo -->
-        <div class="flex items-center gap-3">
-          <span class="text-2xl">🐢</span>
-          <span class="text-xl font-bold text-neutral-50">Turtelli</span>
-          <span class="text-xs text-neutral-500 font-mono">2.0</span>
-        </div>
-
-        <!-- Navigation Links -->
-        <div class="flex items-center gap-6">
-          <a href="/" class="text-sm text-neutral-400 hover:text-neutral-50 transition-colors">
-            Dashboard
-          </a>
-          <a href="/trades" class="text-sm text-neutral-400 hover:text-neutral-50 transition-colors">
-            Trades
-          </a>
-          <a href="/scanner" class="text-sm text-neutral-400 hover:text-neutral-50 transition-colors">
-            Scanner
-          </a>
-          <a href="/research" class="text-sm text-neutral-400 hover:text-neutral-50 transition-colors">
-            Research
-          </a>
-          <a href="/chat" class="text-sm text-neutral-400 hover:text-neutral-50 transition-colors">
-            AI Chat
-          </a>
-        </div>
+<div class="min-h-screen flex flex-col">
+  <nav class="sticky top-0 z-50 border-b" style="border-color: var(--border); background: rgba(10,14,18,0.85); backdrop-filter: blur(8px);">
+    <div class="max-w-6xl mx-auto px-4 h-14 flex items-center justify-between">
+      <a href="/" class="flex items-center gap-2.5">
+        <svg width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          <path d="M16 3l11 7v12l-11 7-11-7V10l11-7z" stroke="var(--accent)" stroke-width="2"/>
+          <circle cx="16" cy="16" r="4.5" fill="var(--accent)"/>
+        </svg>
+        <span class="font-semibold tracking-tight text-lg">turtelli</span>
+      </a>
+      <div class="hidden md:flex items-center gap-1 text-sm">
+        <a href="/portfolio/micro" class="btn-ghost !py-1.5">Micro</a>
+        <a href="/portfolio/standard" class="btn-ghost !py-1.5">Standard</a>
+        <a href="/signals" class="btn-ghost !py-1.5">Signals</a>
+        <a href="/trades" class="btn-ghost !py-1.5">Trades</a>
+        <a href="/methodology" class="btn-ghost !py-1.5">Methodology</a>
+        <a href="/pricing" class="btn-primary !py-1.5 ml-2">Pricing</a>
       </div>
+      <button class="md:hidden btn-ghost !px-2" aria-label="menu">☰</button>
     </div>
   </nav>
 
-  <!-- Main Content -->
-  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+  <main class="flex-1 max-w-6xl w-full mx-auto px-4 py-8">
     <slot />
   </main>
 
-  <!-- Footer -->
-  <footer class="border-t border-neutral-800 mt-16">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <div class="flex items-center justify-between text-sm text-neutral-500">
-        <div class="flex items-center gap-2">
-          <span>🐢</span>
-          <span>Turtelli 2.0 — Radical Transparency in Turtle Trading</span>
+  <footer class="border-t mt-16" style="border-color: var(--border);">
+    <div class="max-w-6xl mx-auto px-4 py-8 space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-3 text-sm">
+        <div class="flex items-center gap-2 text-dim">
+          <span class="text-accent">◆</span> turtelli — deterministic turtle trading, radical transparency
         </div>
-        <div class="flex items-center gap-4">
-          <a href="/about" class="hover:text-neutral-300 transition-colors">About</a>
-          <a href="/disclaimer" class="hover:text-neutral-300 transition-colors">Disclaimer</a>
-          <a href="/privacy" class="hover:text-neutral-300 transition-colors">Privacy</a>
+        <div class="flex gap-4 text-dim">
+          <a href="/methodology" class="hover:text-[var(--text)]">Rules</a>
+          <a href="/performance" class="hover:text-[var(--text)]">Performance</a>
+          <a href="/pricing" class="hover:text-[var(--text)]">Pricing</a>
         </div>
       </div>
-      <div class="mt-4 text-xs text-neutral-600">
-        Past performance does not guarantee future results. Trading involves risk.
-        This is a paper trading simulation for educational purposes.
-      </div>
+      <p class="text-xs leading-relaxed" style="color: var(--text-dim);">
+        Paper trading simulation for educational purposes. All trades are hypothetical,
+        executed in virtual portfolios. Past performance — simulated or real — does not
+        guarantee future results. Nothing here is investment advice.
+      </p>
     </div>
   </footer>
 </div>

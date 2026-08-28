@@ -3,11 +3,7 @@
 // ============================================================
 
 <script lang="ts">
-  import type { PageData } from "./$types";
-
-  export let data: PageData;
-
-  // Mock data for now
+  // Mock data for now — full trade page wired to the ledger arrives in Prompt 9.
   const trade = {
     instrument: "NVDA",
     direction: "LONG",

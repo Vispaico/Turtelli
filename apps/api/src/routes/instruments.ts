@@ -1,46 +1,25 @@
 // ============================================================
-// Turtelli 2.0 — Instrument Routes
+// Turtelli 2.0 — Instrument & System Routes (live store backed)
 // ============================================================
 
 import type { FastifyInstance } from "fastify";
+import { liveStore } from "../services/liveStore.js";
 
 export async function instrumentRoutes(app: FastifyInstance) {
-  // GET /api/instruments — List all instruments
-  app.get("/", async (request, reply) => {
-    const { assetClass, exchange, limit } = request.query as {
-      assetClass?: string;
-      exchange?: string;
-      limit?: number;
-    };
-    // TODO: Implement instrument listing
+  // GET /api/instruments/scan-status — health of the nightly scan
+  app.get("/scan-status", async () => {
+    const s = liveStore.getScanStatus();
     return {
-      instruments: [],
-      total: 0,
+      ...s,
+      healthy:
+        s.lastScanAt !== null &&
+        Date.now() - new Date(s.lastScanAt).getTime() < 36 * 3600 * 1000,
     };
   });
 
-  // GET /api/instruments/:symbol — Get instrument details
-  app.get("/:symbol", async (request, reply) => {
-    const { symbol } = request.params as { symbol: string };
-    // TODO: Implement instrument detail
-    return {
-      instrument: null,
-      latestBar: null,
-    };
-  });
-
-  // GET /api/instruments/:symbol/bars — Get historical bars
-  app.get("/:symbol/bars", async (request, reply) => {
-    const { symbol } = request.params as { symbol: string };
-    const { startDate, endDate, limit } = request.query as {
-      startDate?: string;
-      endDate?: string;
-      limit?: number;
-    };
-    // TODO: Implement bar history
-    return {
-      bars: [],
-      total: 0,
-    };
+  // GET /api/instruments/universe-states — per-symbol monitoring states
+  app.get("/universe-states", async () => {
+    const scan = liveStore.getScanStatus();
+    return { states: scan.states, asOf: scan.lastScanAt };
   });
 }
